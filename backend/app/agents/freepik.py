@@ -39,9 +39,9 @@ class FreepikAgent:
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
-                "x-freepik-api-key": self.api_key,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                **({"x-freepik-api-key": self.api_key} if self.api_key else {}),
             },
             timeout=120.0,
         )
@@ -100,6 +100,13 @@ class FreepikAgent:
             if images:
                 image = images[0]
                 image_url = image.get("url") or image.get("base64")
+                if not image_url and not image.get("base64"):
+                    logger.warning(f"⚠️ [FREEPIK] Image object missing both url and base64")
+                    return GeneratedImage(
+                        prompt=prompt,
+                        status="error",
+                        error="No image data in response",
+                    )
                 
                 logger.info(f"✅ [FREEPIK] Image generated successfully")
                 
