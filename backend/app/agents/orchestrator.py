@@ -92,7 +92,8 @@ class AgentOrchestrator:
                     all_news.extend(result.get("news_items", []))
             
             # Phase 2: Fabricate simulation
-            async for event in self._run_fabricate_mock(query, mode):
+            # Now driven by Yutori's findings
+            async for event in self._run_fabricate_mock(query, mode, news_context=all_news):
                 yield event
                 if event.data.get("status") == "completed":
                     simulation_result = event.data.get("result", {})
@@ -112,8 +113,17 @@ class AgentOrchestrator:
                 data={"job_id": str(self.job_id), "query": query, "paper": paper}
             )
         except Exception as e:
-            logger.exception(f"❌ Error: {e}")
-            yield OrchestratorEvent(event_type="error", agent_type=None, data={"message": str(e)})
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+            logger.exception(f"❌ Error in orchestrator: {error_msg}")
+            yield OrchestratorEvent(
+                event_type="error", 
+                agent_type=None, 
+                data={
+                    "message": error_msg,
+                    "error_type": type(e).__name__,
+                    "query": self.query
+                }
+            )
     
     async def _run_multiple_yutori(self, query: str) -> list[dict]:
         """Run 6 Yutori agents in parallel with heavily varied focuses."""
@@ -164,11 +174,22 @@ class AgentOrchestrator:
             agent_type=agent_type,
             data={"status": "running", "progress": 10, "task": f"Starting {name}..."}
         ))
+        await asyncio.sleep(0.5)  # Initial delay
         
         try:
+            # Emit progress update
+            await self._emit_to_websockets(OrchestratorEvent(
+                event_type="agent_update",
+                agent_type=agent_type,
+                data={"status": "running", "progress": 30, "task": f"{name} researching..."}
+            ))
+            
             # 50% chance to skip some specialized agents if query is very simple to save API
             # But for this user request, we run all.
             result = await yutori_agent.research(query)
+            
+            # Add delay to simulate processing
+            await asyncio.sleep(0.8)
             
             if result.status == "error":
                 return {"news_items": self._mock_news_for_agent(agent_type)}
@@ -236,31 +257,104 @@ class AgentOrchestrator:
 
     async def _generate_contextual_images(self, query: str) -> list[str]:
         """Generate 3 distinct images for different sections."""
+        from app.core.config import get_settings
+        
+        settings = get_settings()
+        
+        # Check if API key is configured
+        if not settings.freepik_api_key:
+            logger.warning("⚠️ Freepik API key not configured. Skipping image generation.")
+            return []
+        
         # We'll generate 3 images in parallel
         # 1. Main Cover: Dramatic, overall theme
         # 2. Economy/Market: Charts, financial visual
         # 3. Global/Political: Map or political meeting style
         
         prompts = [
-            (f"Editorial news photo, highly detailed, dramatic lighting: {query}", "cinematic"),
-            (f"Financial data visualization, stock market charts, economic growth graph related to: {query}", "3d-model"),
-            (f"Political map or diplomatic meeting, professional news photography: {query}", "photographic"),
+            f"Editorial news photo, highly detailed, dramatic lighting: {query}",
+            f"Financial data visualization, stock market charts, economic growth graph related to: {query}",
+            f"Political map or diplomatic meeting, professional news photography: {query}",
         ]
         
-        async def gen_one(p, style):
+        async def gen_one(prompt: str, index: int):
             try:
-                res = await freepik_agent.generate_cover_image(p, query, style)
+                logger.info(f"🎨 Generating image {index + 1}/3: {prompt[:50]}...")
+                
+                # Emit progress update
+                await self._emit_to_websockets(OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FREEPIK,
+                    data={"status": "running", "progress": (index * 33), "task": f"Generating image {index + 1}/3..."}
+                ))
+                
+                res = await freepik_agent.generate_image(
+                    prompt=prompt,
+                    negative_prompt="text, watermark, logo, blurry, low quality, cartoon",
+                    guidance_scale=8.0,
+                    num_images=1,
+                    image_size="landscape_4_3",
+                )
+                
+                if res.status == "error":
+                    logger.error(f"❌ Image generation failed: {res.error}")
+                    await self._emit_to_websockets(OrchestratorEvent(
+                        event_type="agent_update",
+                        agent_type=AgentType.FREEPIK,
+                        data={"status": "error", "progress": ((index + 1) * 33), "task": f"Image {index + 1} failed: {res.error}"}
+                    ))
+                    return None
+                
                 if res.base64_data:
+                    logger.info("✅ Image generated (base64)")
+                    await self._emit_to_websockets(OrchestratorEvent(
+                        event_type="agent_update",
+                        agent_type=AgentType.FREEPIK,
+                        data={"status": "completed", "progress": ((index + 1) * 33), "task": f"Image {index + 1} completed"}
+                    ))
                     return f"data:image/png;base64,{res.base64_data}"
-                return res.image_url
-            except:
+                
+                if res.image_url:
+                    logger.info(f"✅ Image generated (URL): {res.image_url[:50]}...")
+                    await self._emit_to_websockets(OrchestratorEvent(
+                        event_type="agent_update",
+                        agent_type=AgentType.FREEPIK,
+                        data={"status": "completed", "progress": ((index + 1) * 33), "task": f"Image {index + 1} completed"}
+                    ))
+                    return res.image_url
+                
+                logger.warning("⚠️ Image generation returned no data")
+                return None
+            except Exception as e:
+                logger.exception(f"❌ Exception during image generation: {e}")
+                await self._emit_to_websockets(OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FREEPIK,
+                    data={"status": "error", "progress": ((index + 1) * 33), "task": f"Image {index + 1} error: {str(e)}"}
+                ))
                 return None
 
+        # Emit start event
+        await self._emit_to_websockets(OrchestratorEvent(
+            event_type="agent_update",
+            agent_type=AgentType.FREEPIK,
+            data={"status": "running", "progress": 0, "task": "Starting image generation..."}
+        ))
+        
         # Run 3 generations in parallel
-        tasks = [gen_one(p, s) for p, s in prompts]
+        tasks = [gen_one(p, i) for i, p in enumerate(prompts)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        return [r for r in results if isinstance(r, str)]
+        # Filter out None and exceptions
+        valid_results = []
+        for r in results:
+            if isinstance(r, str) and r:
+                valid_results.append(r)
+            elif isinstance(r, Exception):
+                logger.error(f"❌ Image generation exception: {r}")
+        
+        logger.info(f"🎨 Successfully generated {len(valid_results)}/{len(prompts)} images")
+        return valid_results
 
     def _compose_paper(self, query: str, news: list, sim: dict, images: list) -> dict:
         tomorrow = datetime.utcnow() + timedelta(days=1)
@@ -290,11 +384,86 @@ class AgentOrchestrator:
             "secondary_image_url": final_images[1],
             "tertiary_image_url": final_images[2],
             "articles": [{"id": str(uuid4()), "title": headline, "content": f"Full coverage of {query}.", "category": "headline", "importance": 5}],
-            "market_snapshot": sim.get("assets", []),
-            "trending_topics": [{"topic": "#GlobalMarkets", "sentiment": -0.4, "mentions": 1250}],
+            "market_snapshot": [
+                {
+                    "asset": asset.get("asset", ""),
+                    "value": asset.get("projected_value", asset.get("current_value", 0)),
+                    "change": asset.get("change", 0),
+                    "changePercent": asset.get("change_percent", 0),
+                }
+                for asset in sim.get("assets", [])
+            ],
+            "trending_topics": self._extract_trending_topics(query, news, sim),
             "news_context": news,
             "generated_at": datetime.utcnow().isoformat(),
         }
+
+    def _extract_trending_topics(self, query: str, news: list, sim: dict) -> list[dict]:
+        """Extract trending topics from query, news, and simulation data."""
+        topics = []
+        query_lower = query.lower()
+        
+        # Extract key themes from query
+        theme_keywords = {
+            "market": ["market", "stock", "trading", "invest", "equity", "dow", "nasdaq", "sp500"],
+            "geopolitical": ["war", "conflict", "tension", "sanction", "diplomat", "treaty", "alliance", "attack"],
+            "tech": ["tech", "technology", "ai", "silicon", "startup", "innovation", "digital"],
+            "economy": ["economy", "gdp", "inflation", "recession", "growth", "unemployment", "fed", "central bank"],
+            "energy": ["oil", "gas", "energy", "petrol", "crude", "fossil"],
+            "crypto": ["bitcoin", "crypto", "blockchain", "ethereum", "digital currency"],
+            "black swan": ["crisis", "crash", "collapse", "surge", "spike", "unexpected", "shock"],
+        }
+        
+        # Find matching themes
+        matched_themes = []
+        for theme, keywords in theme_keywords.items():
+            if any(kw in query_lower for kw in keywords):
+                matched_themes.append(theme.title())
+        
+        # Extract from news titles
+        news_keywords = set()
+        for item in news[:5]:  # Check first 5 news items
+            title = item.get("title", "").lower()
+            # Extract capitalized words (likely entities/topics)
+            words = title.split()
+            for word in words:
+                if len(word) > 4 and word[0].isupper():
+                    news_keywords.add(word.title())
+        
+        # Build topics list
+        # Add query-based themes
+        for theme in matched_themes[:3]:  # Max 3 from query
+            sentiment = -0.3 if "black swan" in theme.lower() or "crisis" in query_lower else 0.2
+            topics.append({
+                "topic": f"#{theme.replace(' ', '')}",
+                "sentiment": sentiment,
+                "mentions": random.randint(800, 2000)
+            })
+        
+        # Add news-derived topics (if we have space)
+        for keyword in list(news_keywords)[:2]:  # Max 2 from news
+            if len(topics) < 5:  # Keep total under 5
+                topics.append({
+                    "topic": keyword,
+                    "sentiment": random.uniform(-0.2, 0.3),
+                    "mentions": random.randint(500, 1500)
+                })
+        
+        # Add market-related topic if we have simulation data
+        if sim.get("assets") and len(topics) < 5:
+            main_asset = sim["assets"][0] if sim["assets"] else {}
+            asset_name = main_asset.get("asset", "Markets")
+            topics.append({
+                "topic": asset_name,
+                "sentiment": -0.1 if main_asset.get("change_percent", 0) < 0 else 0.2,
+                "mentions": random.randint(1000, 2500)
+            })
+        
+        # Fallback if no topics found
+        if not topics:
+            topics = [{"topic": "#BreakingNews", "sentiment": 0.0, "mentions": 1200}]
+        
+        return topics[:5]  # Return max 5 topics
 
     async def _emit_to_websockets(self, event: OrchestratorEvent):
         from app.api.websocket import manager
@@ -314,51 +483,152 @@ class AgentOrchestrator:
     def _mock_news_for_agent(self, agent_type: AgentType) -> list[dict]:
         return [{"title": "Agent Researching...", "source": "Internal", "agent": agent_type.value}]
 
-    async def _run_fabricate_mock(self, query: str, mode: str) -> AsyncGenerator[OrchestratorEvent, None]:
-        tasks = [
-            ("Initializing simulation...", 0, 0.2),
-            ("Running Monte Carlo...", 40, 0.4),
-            ("Generating projections...", 80, 0.2),
-        ]
-        for task, progress, delay in tasks:
+    async def _run_fabricate_mock(self, query: str, mode: str, news_context: list = None) -> AsyncGenerator[OrchestratorEvent, None]:
+        from app.agents.market_data import market_data_agent
+        
+        if news_context is None:
+            news_context = []
+        
+        try:
+            # Step 1: Analyze market context (Real Data)
             yield OrchestratorEvent(
                 event_type="agent_update",
                 agent_type=AgentType.FABRICATE,
-                data={"status": "running", "progress": progress, "task": task}
+                data={"status": "running", "progress": 10, "task": "Fetching real market data..."}
             )
-            await asyncio.sleep(delay)
-        
-        yield OrchestratorEvent(
-            event_type="agent_update",
-            agent_type=AgentType.FABRICATE,
-            data={"status": "completed", "progress": 100, "result": self._generate_simulation(query)}
-        )
+            await asyncio.sleep(0.8)  # Add delay to make it feel more realistic
+            
+            # Use news context to refine ticker search if available
+            search_query = query
+            if news_context:
+                # Extract potential entities from news titles to improve search
+                keywords = [n["title"] for n in news_context[:2]]
+                search_query = f"{query} {' '.join(keywords)}"
 
-    def _generate_simulation(self, query: str) -> dict:
-        query_lower = query.lower()
-        is_crisis = any(w in query_lower for w in ["crash", "spike", "surge", "collapse", "tariff", "war"])
-        direction = -1 if is_crisis else 1
-        vol = 2.0
+            try:
+                market_context = await market_data_agent.get_market_context(search_query)
+                if "error" in market_context:
+                    logger.warning(f"⚠️ Market data error: {market_context.get('error')}, using fallback")
+                    market_context = {"name": "Market", "current_price": 1000, "history": []}
+            except Exception as e:
+                logger.exception(f"❌ Error fetching market data: {e}")
+                market_context = {"name": "Market", "current_price": 1000, "history": []}
+            
+            ticker_name = market_context.get("name", "Market")
+            
+            yield OrchestratorEvent(
+                event_type="agent_update",
+                agent_type=AgentType.FABRICATE,
+                data={"status": "running", "progress": 40, "task": f"Analyzing {ticker_name} history..."}
+            )
+            await asyncio.sleep(1.5)  # Increase delay
+
+            # Step 2: Run Simulation (Projection)
+            yield OrchestratorEvent(
+                event_type="agent_update",
+                agent_type=AgentType.FABRICATE,
+                data={"status": "running", "progress": 80, "task": "Running predictive models..."}
+            )
+            await asyncio.sleep(1.2)  # Add delay before completion
+            
+            simulation_result = self._generate_simulation(query, market_context)
+            
+            yield OrchestratorEvent(
+                event_type="agent_update",
+                agent_type=AgentType.FABRICATE,
+                data={"status": "completed", "progress": 100, "result": simulation_result}
+            )
+        except Exception as e:
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+            logger.exception(f"❌ Error in _run_fabricate_mock: {error_msg}")
+            yield OrchestratorEvent(
+                event_type="error",
+                agent_type=AgentType.FABRICATE,
+                data={"message": f"Simulation error: {error_msg}", "error_type": type(e).__name__}
+            )
+
+    
+    def _generate_simulation(self, query: str, market_ctx: dict, news_context: list = []) -> dict:
+        """Generate simulation data using real historical context and news findings."""
+        # Combine query + news headlines for sentiment analysis
+        text_corpus = query.lower()
+        if news_context:
+            text_corpus += " " + " ".join([n["title"].lower() for n in news_context])
+            
+        # Sentiment Keywords
+        negative_keywords = ["crash", "spike", "surge", "collapse", "tariff", "war", "crisis", "attack", "tension", "nuclear", "sanction", "ban"]
+        positive_keywords = ["boom", "growth", "record", "peace", "deal", "agreement", "stimulus", "cut", "rally"]
         
-        configs = {
-            "S&P 500": {"base": 5000, "vol": 0.02 * vol, "bias": direction * -0.015},
-            "CAC 40": {"base": 7600, "vol": 0.03 * vol, "bias": direction * -0.025}, # French index
-            "EUR/USD": {"base": 1.08, "vol": 0.01 * vol, "bias": -0.01},
-            "Gold": {"base": 2050, "vol": 0.015 * vol, "bias": 0.02 if is_crisis else 0},
-            "VIX": {"base": 15, "vol": 0.1 * vol, "bias": 0.3 if is_crisis else -0.05},
+        # Simple Sentiment Scoring
+        neg_score = sum(1 for w in negative_keywords if w in text_corpus)
+        pos_score = sum(1 for w in positive_keywords if w in text_corpus)
+        
+        # Determine Direction
+        if "oil" in text_corpus or "gold" in text_corpus:
+            # Commodities often go UP in crisis
+            direction = 1 if neg_score > pos_score else -1
+        else:
+            # Equities generally go DOWN in crisis
+            direction = -1 if neg_score > pos_score else 1
+            
+        # Determine Volatility based on "loudness" of news
+        volatility_multiplier = 1.0 + (neg_score + pos_score) * 0.2
+        volatility = 0.02 * volatility_multiplier
+        
+        main_asset_name = market_ctx.get("name", "Market Index")
+        main_asset_hist = market_ctx.get("history", [])
+        current_val = market_ctx.get("current_price", 1000)
+        
+        # Projection Logic
+        projected_change = direction * (volatility * 100)
+        # Cap extreme moves for realism unless "nuclear" involved
+        if "nuclear" not in text_corpus and abs(projected_change) > 15:
+            projected_change = 15 * (1 if projected_change > 0 else -1)
+            
+        projected_val = current_val * (1 + (projected_change / 100))
+
+        
+        # Build the main asset result
+        main_asset = {
+            "asset": main_asset_name,
+            "current_value": round(current_val, 2),
+            "projected_value": round(projected_val, 2),
+            "change": round(projected_val - current_val, 2),
+            "change_percent": round(projected_change, 2),
+            "history": main_asset_hist, # REAL HISTORY
+            "is_primary": True
         }
         
-        assets = []
-        for name, cfg in configs.items():
-            change = cfg["bias"] + random.gauss(0, cfg["vol"])
-            projected = cfg["base"] * (1 + change)
-            assets.append({
-                "asset": name, "current_value": round(cfg["base"], 2),
-                "projected_value": round(projected, 2), "change": round(projected - cfg["base"], 2),
-                "change_percent": round(change * 100, 2),
-            })
+        # Generate correlated assets (Mocked relative to main)
+        assets = [main_asset]
         
-        assets.sort(key=lambda a: abs(a["change_percent"]), reverse=True)
+        # Helper to add correlated asset
+        def add_correlated(name, base_price, correlation):
+            # If main asset drops 5%, and corr is 0.5, this drops 2.5%
+            pct = projected_change * correlation
+            # Add some noise
+            pct += random.gauss(0, 1.0)
+            val = base_price * (1 + pct/100)
+            assets.append({
+                "asset": name,
+                "current_value": float(base_price),
+                "projected_value": round(val, 2),
+                "change": round(val - base_price, 2),
+                "change_percent": round(pct, 2),
+                "is_primary": False
+            })
+
+        # Add standard context assets
+        if "Gold" not in main_asset_name:
+            add_correlated("Gold", 2050, -0.6 if neg_score > pos_score else 0.1) # Inverse to crisis
+        
+        if "VIX" not in main_asset_name:
+            # High neg_score (crisis) -> VIX spike
+            add_correlated("VIX", 15, -4.0 if neg_score > pos_score else 0.5) 
+            
+        if "EUR/USD" not in main_asset_name:
+            add_correlated("EUR/USD", 1.08, 0.3)
+
         return {"scenario": query, "assets": assets}
 
 orchestrator = AgentOrchestrator()

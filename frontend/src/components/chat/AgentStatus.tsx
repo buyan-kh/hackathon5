@@ -12,6 +12,7 @@ import {
 } from "@tabler/icons-react";
 import { useChatStore, AgentStatus as AgentStatusType } from "@/stores/chat.store";
 import { cn } from "@/lib/utils";
+import { Stepper } from "@/components/ui/stepper";
 
 const agentConfig: Record<string, {
     icon: typeof IconNews;
@@ -68,6 +69,13 @@ const agentConfig: Record<string, {
         bgColor: "bg-purple-500/10",
         borderColor: "border-purple-500/20",
         label: "Market Simulation",
+    },
+    freepik: {
+        icon: IconNews,
+        color: "text-pink-500",
+        bgColor: "bg-pink-500/10",
+        borderColor: "border-pink-500/20",
+        label: "Image Generation",
     },
 };
 
@@ -170,12 +178,19 @@ export function AgentStatus() {
                     </span>
                 </div>
 
-                {/* 2x2 Grid for 4 agents */}
-                <div className="grid gap-3 grid-cols-2">
-                    {agents.map((agent) => (
-                        <AgentCard key={agent.id} agent={agent} />
-                    ))}
-                </div>
+                {/* Stepper for agents */}
+                <Stepper
+                    steps={agents
+                        .filter((agent) => agent.status !== "idle")
+                        .map((agent) => ({
+                            id: agent.id,
+                            title: agentConfig[agent.type]?.label || agent.name,
+                            description: agent.currentTask,
+                            status: agent.status,
+                            progress: agent.progress,
+                        }))}
+                    orientation="vertical"
+                />
             </div>
         </motion.div>
     );

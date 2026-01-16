@@ -112,8 +112,10 @@ export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: C
                             }
                         }
                     } else if (data.event_type === "error") {
-                        console.error("❌ Error:", data.data);
+                        const errorMessage = data.data?.message || data.data?.error || JSON.stringify(data.data) || "Unknown error";
+                        console.error("❌ Error:", errorMessage, data);
                         setIsGenerating(false);
+                        resetAgents();
                     } else if (data.event_type === "start") {
                         console.log("🚀 Started processing:", data.data);
                         resetAgents();

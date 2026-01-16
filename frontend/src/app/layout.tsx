@@ -37,6 +37,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: "#0052FF",
+  colorScheme: "light",
 };
 
 export default function RootLayout({
@@ -45,8 +46,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${calistoga.variable} ${jetbrainsMono.variable}`}>
-      <body className="min-h-screen bg-background text-foreground antialiased">
+    <html 
+      lang="en" 
+      className={`${inter.variable} ${calistoga.variable} ${jetbrainsMono.variable}`} 
+      style={{ colorScheme: 'light' }}
+      suppressHydrationWarning
+    >
+      <body className="min-h-screen bg-background text-foreground antialiased" suppressHydrationWarning>
         {children}
       </body>
     </html>

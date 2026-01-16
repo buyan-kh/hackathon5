@@ -8,6 +8,7 @@ import {
     IconClock,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
+import { SimulationChart } from "@/components/simulation/SimulationChart";
 
 interface NewsSource {
     title: string;
@@ -237,24 +238,48 @@ export function PaperLayout({
                     </div>
                 </div>
 
-                {/* RIGHT COLUMN - Opinion/Analysis */}
+                {/* RIGHT COLUMN - Analysis & Charts */}
                 <div className="col-span-12 md:col-span-3">
+
+                    {/* Market Simulation Chart */}
+                    <div className="mb-6">
+                        <div className="border-b-2 border-black mb-3 pb-1">
+                            <h3 className="font-bold text-xs uppercase tracking-widest text-[#c4161c]">Market Forecast</h3>
+                        </div>
+                        {marketSnapshot[0] ? (
+                            <SimulationChart
+                                asset={marketSnapshot[0]}
+                                height={220}
+                                className="border-none shadow-none bg-transparent p-0"
+                            />
+                        ) : (
+                            <div className="h-40 bg-zinc-100 flex items-center justify-center text-xs text-muted-foreground">
+                                Running simulation...
+                            </div>
+                        )}
+                        <p className="text-[10px] text-[#666] mt-2 leading-tight">
+                            AI-driven projection based on historical volatility and current news sentiment.
+                        </p>
+                    </div>
+
                     <div className="bg-[#f7f7f7] p-4">
                         <h3 className="text-[#c4161c] text-xs font-bold mb-4 uppercase tracking-widest border-b border-[#ddd] pb-2">
                             Opinion & Analysis
                         </h3>
 
                         <div className="space-y-6">
-                            {sidebarNews.map((news, i) => (
+                            {/* Expand to show more news items (Total 9 requested) */}
+                            {/* Featured (3) are in left col, so show remaining here */}
+                            {newsContext.length > 3 && newsContext.slice(3, 9).map((news, i) => (
                                 <article key={i}>
                                     <p className="text-[10px] text-[#666] uppercase mb-1">
-                                        {news.agent?.replace("yutori_", "") || "Analysis"}
+                                        {news.agent?.replace("yutori_", "") || "Global Wire"}
                                     </p>
                                     <h4 className="text-sm font-bold text-[#1a1a1a] leading-tight mb-2 hover:text-[#c4161c] cursor-pointer font-serif">
                                         {news.title}
                                     </h4>
                                     <p className="text-xs text-[#555]">
-                                        {news.content ? news.content.slice(0, 80) + "..." : "Expert commentary on the situation..."}
+                                        {news.content ? news.content.slice(0, 80) + "..." : "Updates on the developing situation..."}
                                     </p>
                                 </article>
                             ))}

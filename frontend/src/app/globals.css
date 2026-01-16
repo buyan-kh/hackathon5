@@ -6,6 +6,29 @@
 /* Google Fonts - loaded via next/font in layout.tsx */
 /* Calistoga (display), Inter (UI), JetBrains Mono (code) */
 
+/* Force light mode - disable dark mode completely */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: light !important;
+    /* Override any dark mode variables */
+    --background: #FAFAFA !important;
+    --foreground: #0F172A !important;
+    --muted: #F1F5F9 !important;
+    --muted-foreground: #64748B !important;
+    --border: #E2E8F0 !important;
+    --card: #FFFFFF !important;
+  }
+  
+  html {
+    color-scheme: light !important;
+  }
+  
+  body {
+    background: #FAFAFA !important;
+    color: #0F172A !important;
+  }
+}
+
 :root {
   /* Core Colors */
   --background: #FAFAFA;
@@ -42,17 +65,7 @@
   --duration-entrance: 700ms;
 }
 
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0F172A;
-    --foreground: #F8FAFC;
-    --muted: #1E293B;
-    --muted-foreground: #94A3B8;
-    --border: #334155;
-    --card: #1E293B;
-  }
-}
+/* Light theme only - dark mode disabled */
 
 @theme inline {
   --color-background: var(--background);
@@ -78,6 +91,13 @@
 
 html {
   scroll-behavior: smooth;
+  color-scheme: light;
+}
+
+/* Force light mode on html element */
+html[data-theme="dark"],
+html.dark {
+  color-scheme: light !important;
 }
 
 body {
