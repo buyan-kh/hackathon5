@@ -249,7 +249,7 @@ class AgentOrchestrator:
         
         async def gen_one(p, style):
             try:
-                res = await freepik_agent.generate_cover_image(p, query, "neutral")
+                res = await freepik_agent.generate_cover_image(p, query, style)
                 if res.base64_data:
                     return f"data:image/png;base64,{res.base64_data}"
                 return res.image_url
