@@ -100,6 +100,13 @@ class FreepikAgent:
             if images:
                 image = images[0]
                 image_url = image.get("url") or image.get("base64")
+                if not image_url and not image.get("base64"):
+                    logger.warning(f"⚠️ [FREEPIK] Image object missing both url and base64")
+                    return GeneratedImage(
+                        prompt=prompt,
+                        status="error",
+                        error="No image data in response",
+                    )
                 
                 logger.info(f"✅ [FREEPIK] Image generated successfully")
                 
