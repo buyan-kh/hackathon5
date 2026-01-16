@@ -39,9 +39,9 @@ class FreepikAgent:
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
-                "x-freepik-api-key": self.api_key,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                **({"x-freepik-api-key": self.api_key} if self.api_key else {}),
             },
             timeout=120.0,
         )
