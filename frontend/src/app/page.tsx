@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { IconNews, IconArrowLeft } from "@tabler/icons-react";
-import { AnimatedGreeting, ChatInput, ExamplePrompts, AgentStatus } from "@/components/chat";
+import { AnimatedGreeting, ChatInput, ExamplePrompts, AgentStatus, ThreadSidebar, ThreadToggle } from "@/components/chat";
 import { PaperLayout } from "@/components/paper";
 import { useChatStore } from "@/stores/chat.store";
 import { Editor } from "@tiptap/react";
@@ -15,6 +15,8 @@ interface Paper {
   subheadline: string;
   query: string;
   cover_image_url: string | null;
+  secondary_image_url?: string | null;
+  tertiary_image_url?: string | null;
   articles: Array<{
     id: string;
     title: string;
@@ -34,30 +36,23 @@ interface Paper {
     sentiment: number;
     mentions: number;
   }>;
+  news_context: Array<{
+    title: string;
+    source: string;
+    content?: string;
+    agent?: string;
+  }>;
 }
 
 export default function Home() {
   const editorRef = useRef<Editor | null>(null);
   const [generatedPaper, setGeneratedPaper] = useState<Paper | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const threads = useChatStore((state) => state.threads);
   const isGenerating = useChatStore((state) => state.isGenerating);
   const agents = useChatStore((state) => state.agents);
 
-  // Check if any agent is active
-  const hasActiveAgents = agents.some(a => a.status !== "idle");
-
-  // Listen for paper results from ChatInput's WebSocket
-  useEffect(() => {
-    const handlePaperGenerated = (event: CustomEvent<Paper>) => {
-      console.log("📰 Paper generated:", event.detail);
-      setGeneratedPaper(event.detail);
-    };
-
-    window.addEventListener("paper-generated" as any, handlePaperGenerated);
-    return () => {
-      window.removeEventListener("paper-generated" as any, handlePaperGenerated);
-    };
-  }, []);
+  const hasActiveAgents = agents.some((a) => a.status !== "idle");
 
   const handlePromptSelect = useCallback((prompt: string) => {
     if (editorRef.current) {
@@ -74,23 +69,40 @@ export default function Home() {
   // Show the paper if generated
   if (generatedPaper) {
     return (
-      <main className="relative min-h-screen flex flex-col bg-muted/30">
+      <main className="relative min-h-screen flex flex-col bg-[#f5f0e8]">
+        {/* Thread Sidebar */}
+        <ThreadSidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          onSelectThread={(thread) => {
+            // If thread has paper data, we could re-display it
+            // For now we'll just go back to main to start a new query
+            // based on the previous one
+            if (thread.paperData) {
+              console.log("Loading paper from history:", thread.paperData);
+            }
+          }}
+        />
+
         {/* Header */}
-        <header className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-background/80 backdrop-blur border-b border-border">
-          <button
-            onClick={handleBackToChat}
-            className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <IconArrowLeft size={18} />
-            New Query
-          </button>
+        <header className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-white/90 backdrop-blur border-b border-[#e0d8cc]">
+          <div className="flex items-center gap-3">
+            <ThreadToggle onClick={() => setSidebarOpen(true)} />
+            <button
+              onClick={handleBackToChat}
+              className="flex items-center gap-2 text-sm text-[#666] hover:text-[#1a1a1a] transition-colors"
+            >
+              <IconArrowLeft size={18} />
+              New Query
+            </button>
+          </div>
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-accent to-accent-secondary">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1a1a1a]">
               <IconNews size={16} className="text-white" />
             </div>
-            <span className="font-display text-lg">Tomorrow&apos;s Paper</span>
+            <span className="font-display text-lg text-[#1a1a1a]">Tomorrow&apos;s Paper</span>
           </div>
-          <div className="w-24" /> {/* Spacer for centering */}
+          <div className="w-32" />
         </header>
 
         {/* Paper Content */}
@@ -100,12 +112,15 @@ export default function Home() {
             headline={generatedPaper.headline}
             subheadline={generatedPaper.subheadline}
             coverImageUrl={generatedPaper.cover_image_url || undefined}
-            articles={generatedPaper.articles.map(a => ({
+            secondaryImageUrl={generatedPaper.secondary_image_url || undefined}
+            tertiaryImageUrl={generatedPaper.tertiary_image_url || undefined}
+            articles={generatedPaper.articles.map((a) => ({
               ...a,
               imageUrl: undefined,
             }))}
             marketSnapshot={generatedPaper.market_snapshot}
             trendingTopics={generatedPaper.trending_topics}
+            newsContext={generatedPaper.news_context}
             query={generatedPaper.query}
           />
         </div>
@@ -115,6 +130,9 @@ export default function Home() {
 
   return (
     <main className="relative min-h-screen flex flex-col">
+      {/* Thread Sidebar */}
+      <ThreadSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+
       {/* Background Effects */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         <div className="radial-glow absolute -top-48 -right-48 w-[600px] h-[600px]" />
@@ -127,8 +145,9 @@ export default function Home() {
           initial={{ opacity: 0, x: -10 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5 }}
-          className="flex items-center gap-2"
+          className="flex items-center gap-3"
         >
+          <ThreadToggle onClick={() => setSidebarOpen(true)} />
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-accent-secondary shadow-accent">
             <IconNews size={20} className="text-white" />
           </div>
@@ -152,7 +171,7 @@ export default function Home() {
       {/* Main Content */}
       <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-4">
         <div className="w-full max-w-3xl flex flex-col items-center">
-          {/* Greeting - hide when generating */}
+          {/* Greeting */}
           <AnimatePresence>
             {!isGenerating && !hasActiveAgents && (
               <motion.div
@@ -170,7 +189,7 @@ export default function Home() {
             <ChatInput onPaperGenerated={(paper) => setGeneratedPaper(paper as Paper)} />
           </div>
 
-          {/* Example Prompts - hide when generating */}
+          {/* Example Prompts */}
           <AnimatePresence>
             {!isGenerating && !hasActiveAgents && (
               <motion.div
