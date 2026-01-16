@@ -173,6 +173,47 @@ class AgentOrchestrator:
             if result.status == "error":
                 return {"news_items": self._mock_news_for_agent(agent_type)}
 
+            # If task was successfully queued, poll for completion
+            if result.task_id:
+                await self._emit_to_websockets(OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=agent_type,
+                    data={"status": "running", "progress": 30, "task": f"{name} researching..."}
+                ))
+                
+                poll_interval = 2  # seconds between polls
+                timeout = 60  # total timeout in seconds
+                elapsed = 0
+                
+                while elapsed < timeout:
+                    status_result = await yutori_agent.get_research_status(result.task_id)
+                    
+                    if status_result.status == "completed":
+                        # Use sources from the final status result
+                        result = status_result
+                        break
+                    elif status_result.status == "error":
+                        logger.warning(f"Research task {result.task_id} failed: {status_result.error}")
+                        return {"news_items": self._mock_news_for_agent(agent_type)}
+                    elif status_result.status in ("queued", "processing"):
+                        # Update progress based on elapsed time
+                        progress = min(30 + int((elapsed / timeout) * 60), 90)
+                        await self._emit_to_websockets(OrchestratorEvent(
+                            event_type="agent_update",
+                            agent_type=agent_type,
+                            data={"status": "running", "progress": progress, "task": f"{name} processing..."}
+                        ))
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                    else:
+                        # Unknown status, wait and retry
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                else:
+                    # Timeout reached
+                    logger.warning(f"Research task {result.task_id} timed out after {timeout}s")
+                    return {"news_items": self._mock_news_for_agent(agent_type)}
+
             await self._emit_to_websockets(OrchestratorEvent(
                  event_type="agent_update",
                  agent_type=agent_type,
