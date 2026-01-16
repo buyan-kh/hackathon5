@@ -44,9 +44,12 @@ export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: C
         chatMode,
         setChatMode,
         createThread,
+        currentThreadId,
+        setCurrentThread,
         addMessage,
         updateAgentStatus,
         resetAgents,
+        setPaperData,
     } = useChatStore();
 
     // WebSocket connection
@@ -90,15 +93,29 @@ export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: C
                         setIsGenerating(false);
                         resetAgents();
 
-                        // Pass paper to parent
+                        // Pass paper to parent and save to thread
                         if (data.data?.paper) {
                             const paper = data.data.paper;
                             console.log("📰 Paper generated:", paper);
                             onPaperGenerated?.(paper);
+
+                            // Save paper to current thread for history
+                            const threadId = useChatStore.getState().currentThreadId;
+                            if (threadId) {
+                                setPaperData(threadId, {
+                                    id: paper.paper_id,
+                                    headline: paper.headline,
+                                    articles: paper.articles || [],
+                                    generatedAt: new Date(),
+                                    coverImage: paper.cover_image_url,
+                                });
+                            }
                         }
                     } else if (data.event_type === "error") {
-                        console.error("❌ Error:", data.data);
+                        const errorMessage = data.data?.message || data.data?.error || JSON.stringify(data.data) || "Unknown error";
+                        console.error("❌ Error:", errorMessage, data);
                         setIsGenerating(false);
+                        resetAgents();
                     } else if (data.event_type === "start") {
                         console.log("🚀 Started processing:", data.data);
                         resetAgents();

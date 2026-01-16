@@ -59,7 +59,7 @@ export interface Article {
 export interface AgentStatus {
     id: string;
     name: string;
-    type: "yutori" | "fabricate" | "freepik";
+    type: "yutori_news" | "yutori_sentiment" | "yutori_analysis" | "yutori_target" | "yutori_global" | "yutori_econ" | "fabricate" | "freepik";
     status: "idle" | "running" | "completed" | "error";
     progress: number;
     currentTask?: string;
@@ -67,41 +67,36 @@ export interface AgentStatus {
 }
 
 interface ChatState {
-    // Current thread
     currentThreadId: string | null;
     threads: Thread[];
-
-    // Agent statuses
     agents: AgentStatus[];
-
-    // UI state
     isGenerating: boolean;
     useWebSearch: boolean;
     chatMode: "scout" | "simulate" | "paper";
 
-    // Actions
     createThread: (title: string) => string;
     setCurrentThread: (threadId: string | null) => void;
     addMessage: (threadId: string, message: Omit<Message, "id" | "timestamp">) => void;
     updateMessage: (threadId: string, messageId: string, updates: Partial<Message>) => void;
-
     setIsGenerating: (isGenerating: boolean) => void;
     setUseWebSearch: (useWebSearch: boolean) => void;
     setChatMode: (mode: "scout" | "simulate" | "paper") => void;
-
     updateAgentStatus: (agentId: string, updates: Partial<AgentStatus>) => void;
     resetAgents: () => void;
-
     setSimulationData: (threadId: string, data: SimulationData) => void;
     setPaperData: (threadId: string, data: PaperData) => void;
-
     clearThread: (threadId: string) => void;
 }
 
+// 6 Yutori agents + Fabricate
 const initialAgents: AgentStatus[] = [
-    { id: "yutori", name: "Yutori", type: "yutori", status: "idle", progress: 0 },
-    { id: "fabricate", name: "Tonic Fabricate", type: "fabricate", status: "idle", progress: 0 },
-    { id: "freepik", name: "Freepik", type: "freepik", status: "idle", progress: 0 },
+    { id: "yutori_news", name: "News Scout", type: "yutori_news", status: "idle", progress: 0 },
+    { id: "yutori_sentiment", name: "Sentiment Analysis", type: "yutori_sentiment", status: "idle", progress: 0 },
+    { id: "yutori_analysis", name: "Expert Commentary", type: "yutori_analysis", status: "idle", progress: 0 },
+    { id: "yutori_target", name: "Target Impact", type: "yutori_target", status: "idle", progress: 0 },
+    { id: "yutori_global", name: "Global Reaction", type: "yutori_global", status: "idle", progress: 0 },
+    { id: "yutori_econ", name: "Economic Outlook", type: "yutori_econ", status: "idle", progress: 0 },
+    { id: "fabricate", name: "Market Simulation", type: "fabricate", status: "idle", progress: 0 },
 ];
 
 export const useChatStore = create<ChatState>()(

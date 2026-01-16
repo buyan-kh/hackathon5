@@ -2,23 +2,66 @@
 
 import { motion } from "framer-motion";
 import {
-    IconSearch,
+    IconNews,
+    IconMoodSmile,
+    IconReportAnalytics,
     IconChartLine,
-    IconPhoto,
     IconCheck,
     IconX,
-    IconLoader2
+    IconLoader2,
 } from "@tabler/icons-react";
 import { useChatStore, AgentStatus as AgentStatusType } from "@/stores/chat.store";
 import { cn } from "@/lib/utils";
+import { Stepper } from "@/components/ui/stepper";
 
-const agentConfig = {
-    yutori: {
-        icon: IconSearch,
+const agentConfig: Record<string, {
+    icon: typeof IconNews;
+    color: string;
+    bgColor: string;
+    borderColor: string;
+    label: string;
+}> = {
+    yutori_news: {
+        icon: IconNews,
         color: "text-blue-500",
         bgColor: "bg-blue-500/10",
         borderColor: "border-blue-500/20",
-        label: "Web Scouting",
+        label: "Breaking News",
+    },
+    yutori_sentiment: {
+        icon: IconMoodSmile,
+        color: "text-orange-500",
+        bgColor: "bg-orange-500/10",
+        borderColor: "border-orange-500/20",
+        label: "Social Sentiment",
+    },
+    yutori_analysis: {
+        icon: IconReportAnalytics,
+        color: "text-cyan-500",
+        bgColor: "bg-cyan-500/10",
+        borderColor: "border-cyan-500/20",
+        label: "Expert Analysis",
+    },
+    yutori_target: {
+        icon: IconNews,
+        color: "text-red-500",
+        bgColor: "bg-red-500/10",
+        borderColor: "border-red-500/20",
+        label: "Local Impact",
+    },
+    yutori_global: {
+        icon: IconNews,
+        color: "text-indigo-500",
+        bgColor: "bg-indigo-500/10",
+        borderColor: "border-indigo-500/20",
+        label: "Global Reaction",
+    },
+    yutori_econ: {
+        icon: IconChartLine,
+        color: "text-emerald-500",
+        bgColor: "bg-emerald-500/10",
+        borderColor: "border-emerald-500/20",
+        label: "Economic Outlook",
     },
     fabricate: {
         icon: IconChartLine,
@@ -28,16 +71,18 @@ const agentConfig = {
         label: "Market Simulation",
     },
     freepik: {
-        icon: IconPhoto,
-        color: "text-green-500",
-        bgColor: "bg-green-500/10",
-        borderColor: "border-green-500/20",
-        label: "Content Generation",
+        icon: IconNews,
+        color: "text-pink-500",
+        bgColor: "bg-pink-500/10",
+        borderColor: "border-pink-500/20",
+        label: "Image Generation",
     },
 };
 
 function AgentCard({ agent }: { agent: AgentStatusType }) {
     const config = agentConfig[agent.type];
+    if (!config) return null;
+
     const Icon = config.icon;
 
     const statusIcon = {
@@ -49,8 +94,8 @@ function AgentCard({ agent }: { agent: AgentStatusType }) {
 
     return (
         <motion.div
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
             className={cn(
                 "rounded-lg border p-3 transition-all",
                 config.borderColor,
@@ -73,10 +118,13 @@ function AgentCard({ agent }: { agent: AgentStatusType }) {
             {/* Progress Bar */}
             <div className="h-1.5 w-full rounded-full bg-background/50 overflow-hidden">
                 <motion.div
-                    className={cn("h-full rounded-full",
-                        agent.status === "completed" ? "bg-green-500" :
-                            agent.status === "error" ? "bg-red-500" :
-                                "bg-gradient-to-r from-accent to-accent-secondary"
+                    className={cn(
+                        "h-full rounded-full",
+                        agent.status === "completed"
+                            ? "bg-green-500"
+                            : agent.status === "error"
+                                ? "bg-red-500"
+                                : "bg-gradient-to-r from-accent to-accent-secondary"
                     )}
                     initial={{ width: 0 }}
                     animate={{ width: `${agent.progress}%` }}
@@ -105,7 +153,7 @@ export function AgentStatus() {
     const agents = useChatStore((state) => state.agents);
     const isGenerating = useChatStore((state) => state.isGenerating);
 
-    if (!isGenerating && agents.every(a => a.status === "idle")) {
+    if (!isGenerating && agents.every((a) => a.status === "idle")) {
         return null;
     }
 
@@ -114,7 +162,7 @@ export function AgentStatus() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="w-full max-w-2xl mx-auto px-4"
+            className="w-full max-w-3xl mx-auto px-4"
         >
             <div className="rounded-xl border border-border/50 bg-card p-4 shadow-lg">
                 <div className="flex items-center justify-between mb-4">
@@ -130,11 +178,19 @@ export function AgentStatus() {
                     </span>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-3">
-                    {agents.map((agent) => (
-                        <AgentCard key={agent.id} agent={agent} />
-                    ))}
-                </div>
+                {/* Stepper for agents */}
+                <Stepper
+                    steps={agents
+                        .filter((agent) => agent.status !== "idle")
+                        .map((agent) => ({
+                            id: agent.id,
+                            title: agentConfig[agent.type]?.label || agent.name,
+                            description: agent.currentTask,
+                            status: agent.status,
+                            progress: agent.progress,
+                        }))}
+                    orientation="vertical"
+                />
             </div>
         </motion.div>
     );

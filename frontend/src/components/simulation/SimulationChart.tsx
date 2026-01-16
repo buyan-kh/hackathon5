@@ -14,19 +14,16 @@ import { curveMonotoneX } from "@visx/curve";
 import { LinearGradient } from "@visx/gradient";
 import { cn } from "@/lib/utils";
 
-export interface DataPoint {
-    date: string;
-    value: number;
-    projected?: boolean;
+interface MarketAsset {
+    asset: string;
+    current_value: number;
+    projected_value: number;
+    change_percent: number;
+    history?: { date: string; value: number }[];
 }
 
 interface SimulationChartProps {
-    data: DataPoint[];
-    title?: string;
-    subtitle?: string;
-    currentValue?: number;
-    projectedValue?: number;
-    changePercent?: number;
+    asset: MarketAsset;
     height?: number;
     className?: string;
 }
@@ -40,79 +37,92 @@ const chartTheme = buildChartTheme({
     gridColorDark: "#334155",
 });
 
+interface ChartPoint {
+    date: string;
+    value: number;
+    type: "history" | "projected";
+}
+
 const accessors = {
-    xAccessor: (d: DataPoint) => d.date,
-    yAccessor: (d: DataPoint) => d.value,
+    xAccessor: (d: ChartPoint) => d.date,
+    yAccessor: (d: ChartPoint) => d.value,
 };
 
 export function SimulationChart({
-    data,
-    title,
-    subtitle,
-    currentValue,
-    projectedValue,
-    changePercent,
-    height = 300,
+    asset,
+    height = 250,
     className,
 }: SimulationChartProps) {
-    // Split data into current and projected
-    const { currentData, projectedData } = useMemo(() => {
-        const current: DataPoint[] = [];
-        const projected: DataPoint[] = [];
+    const { historyData, projectedData, fullData } = useMemo(() => {
+        const history: ChartPoint[] = (asset.history || []).map(h => ({
+            ...h,
+            type: "history"
+        }));
 
-        data.forEach((point, index) => {
-            if (point.projected) {
-                // Include the last current point for continuity
-                if (projected.length === 0 && current.length > 0) {
-                    projected.push(current[current.length - 1]);
-                }
-                projected.push(point);
-            } else {
-                current.push(point);
+        // If no history, mock some for visualization
+        if (history.length === 0) {
+            const base = asset.current_value;
+            for (let i = 10; i > 0; i--) {
+                history.push({
+                    date: `T-${i}`,
+                    value: base * (1 + (Math.random() * 0.02 - 0.01)),
+                    type: "history"
+                });
             }
-        });
+        }
 
-        return { currentData: current, projectedData: projected };
-    }, [data]);
+        // Add current point as the bridge
+        const lastDate = history[history.length - 1]?.date || "Today";
+        // Ensure strictly historical sequence if using real dates
+        const currentPoint: ChartPoint = {
+            date: "Today",
+            value: asset.current_value,
+            type: "history"
+        };
 
-    const isPositiveChange = (changePercent ?? 0) >= 0;
+        if (history[history.length - 1]?.date !== "Today") {
+            history.push(currentPoint);
+        }
+
+        const projectDate = "Future";
+        const projected: ChartPoint[] = [
+            currentPoint, // Start projection from current
+            {
+                date: projectDate,
+                value: asset.projected_value,
+                type: "projected"
+            }
+        ];
+
+        return {
+            historyData: history,
+            projectedData: projected,
+            fullData: [...history, projected[1]]
+        };
+    }, [asset]);
+
+    const isPositive = asset.change_percent >= 0;
 
     return (
-        <div className={cn("w-full rounded-xl border border-border bg-card p-4", className)}>
-            {/* Header */}
-            {(title || subtitle) && (
-                <div className="mb-4 flex items-start justify-between">
-                    <div>
-                        {title && (
-                            <h3 className="text-lg font-semibold">{title}</h3>
-                        )}
-                        {subtitle && (
-                            <p className="text-sm text-muted-foreground">{subtitle}</p>
-                        )}
-                    </div>
-
-                    {/* Value Display */}
-                    {(currentValue !== undefined || projectedValue !== undefined) && (
-                        <div className="text-right">
-                            {projectedValue !== undefined && (
-                                <div className="text-2xl font-bold">
-                                    ${projectedValue.toLocaleString()}
-                                </div>
-                            )}
-                            {changePercent !== undefined && (
-                                <div className={cn(
-                                    "text-sm font-medium",
-                                    isPositiveChange ? "text-green-600" : "text-red-600"
-                                )}>
-                                    {isPositiveChange ? "+" : ""}{changePercent.toFixed(1)}%
-                                </div>
-                            )}
-                        </div>
-                    )}
+        <div className={cn("w-full rounded-xl border border-border bg-white shadow-sm p-4", className)}>
+            <div className="mb-4 flex items-start justify-between">
+                <div>
+                    <h3 className="text-lg font-bold font-serif text-[#1a1a1a]">{asset.asset}</h3>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Market Forecast</p>
                 </div>
-            )}
+                <div className="text-right">
+                    <div className="text-2xl font-bold tabular-nums">
+                        {asset.projected_value.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </div>
+                    <div className={cn(
+                        "text-xs font-bold",
+                        isPositive ? "text-green-600" : "text-red-600"
+                    )}>
+                        {isPositive ? "▲" : "▼"} {Math.abs(asset.change_percent).toFixed(2)}%
+                    </div>
+                </div>
+            </div>
 
-            {/* Chart */}
             <div style={{ height }}>
                 <XYChart
                     height={height}
@@ -120,134 +130,71 @@ export function SimulationChart({
                     yScale={{ type: "linear", nice: true }}
                     theme={chartTheme}
                 >
-                    {/* Gradient Definition */}
                     <LinearGradient
-                        id="area-gradient"
-                        from="#0052FF"
-                        to="#0052FF"
-                        fromOpacity={0.3}
-                        toOpacity={0.05}
+                        id="hist-gradient"
+                        from="#1a1a1a"
+                        to="#1a1a1a"
+                        fromOpacity={0.1}
+                        toOpacity={0.01}
                     />
                     <LinearGradient
-                        id="area-gradient-projected"
-                        from="#4D7CFF"
-                        to="#4D7CFF"
+                        id="proj-gradient"
+                        from={isPositive ? "#16a34a" : "#dc2626"}
+                        to={isPositive ? "#16a34a" : "#dc2626"}
                         fromOpacity={0.2}
                         toOpacity={0.02}
                     />
 
-                    {/* Grid */}
                     <AnimatedGrid
                         columns={false}
                         numTicks={4}
                         lineStyle={{
                             stroke: "#E2E8F0",
-                            strokeOpacity: 0.5,
+                            strokeOpacity: 0.8,
                             strokeDasharray: "4,4",
                         }}
                     />
 
-                    {/* Current Data Area */}
-                    {currentData.length > 0 && (
-                        <AnimatedAreaSeries
-                            dataKey="Current"
-                            data={currentData}
-                            {...accessors}
-                            curve={curveMonotoneX}
-                            fill="url(#area-gradient)"
-                            lineProps={{ stroke: "#0052FF", strokeWidth: 2 }}
-                        />
-                    )}
-
-                    {/* Projected Data Area */}
-                    {projectedData.length > 0 && (
-                        <AnimatedAreaSeries
-                            dataKey="Projected"
-                            data={projectedData}
-                            {...accessors}
-                            curve={curveMonotoneX}
-                            fill="url(#area-gradient-projected)"
-                            lineProps={{
-                                stroke: "#4D7CFF",
-                                strokeWidth: 2,
-                                strokeDasharray: "6,4"
-                            }}
-                        />
-                    )}
-
-                    {/* Current Data Line */}
-                    {currentData.length > 0 && (
-                        <AnimatedLineSeries
-                            dataKey="Current Line"
-                            data={currentData}
-                            {...accessors}
-                            curve={curveMonotoneX}
-                            stroke="#0052FF"
-                            strokeWidth={2.5}
-                        />
-                    )}
-
-                    {/* Projected Data Line */}
-                    {projectedData.length > 0 && (
-                        <AnimatedLineSeries
-                            dataKey="Projected Line"
-                            data={projectedData}
-                            {...accessors}
-                            curve={curveMonotoneX}
-                            stroke="#4D7CFF"
-                            strokeWidth={2.5}
-                            strokeDasharray="6,4"
-                        />
-                    )}
-
-                    {/* Axes */}
-                    <AnimatedAxis
-                        orientation="bottom"
-                        tickLabelProps={{
-                            fill: "#64748B",
-                            fontSize: 11,
-                            fontFamily: "var(--font-inter)",
-                        }}
-                        hideAxisLine
-                        hideTicks
-                    />
-                    <AnimatedAxis
-                        orientation="left"
-                        numTicks={4}
-                        tickFormat={(v) => `$${Number(v).toLocaleString()}`}
-                        tickLabelProps={{
-                            fill: "#64748B",
-                            fontSize: 11,
-                            fontFamily: "var(--font-inter)",
-                            dx: -8,
-                        }}
-                        hideAxisLine
-                        hideTicks
+                    {/* Historical Area */}
+                    <AnimatedAreaSeries
+                        dataKey="History"
+                        data={historyData}
+                        {...accessors}
+                        curve={curveMonotoneX}
+                        fill="url(#hist-gradient)"
+                        lineProps={{ stroke: "#333", strokeWidth: 2 }}
                     />
 
-                    {/* Tooltip */}
+                    {/* Projected Area */}
+                    <AnimatedAreaSeries
+                        dataKey="Projected"
+                        data={projectedData}
+                        {...accessors}
+                        curve={curveMonotoneX}
+                        fill="url(#proj-gradient)"
+                        lineProps={{
+                            stroke: isPositive ? "#16a34a" : "#dc2626",
+                            strokeWidth: 2,
+                            strokeDasharray: "4,4"
+                        }}
+                    />
+
                     <Tooltip
                         snapTooltipToDatumX
                         snapTooltipToDatumY
                         showVerticalCrosshair
                         showSeriesGlyphs
-                        glyphStyle={{
-                            fill: "#0052FF",
-                            strokeWidth: 2,
-                            stroke: "#FFFFFF",
-                        }}
                         renderTooltip={({ tooltipData }) => {
-                            const datum = tooltipData?.nearestDatum?.datum as DataPoint | undefined;
+                            const datum = tooltipData?.nearestDatum?.datum as ChartPoint | undefined;
                             if (!datum) return null;
-
                             return (
-                                <div className="rounded-lg border border-border bg-card p-2 shadow-lg">
-                                    <div className="text-xs text-muted-foreground">{datum.date}</div>
-                                    <div className="text-sm font-semibold">
-                                        ${datum.value.toLocaleString()}
+                                <div className="bg-white border border-[#e0e0e0] p-2 shadow-xl rounded text-xs">
+                                    <div className="font-bold mb-0.5">{datum.date}</div>
+                                    <div className="tabular-nums font-mono">
+                                        {datum.value.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                     </div>
-                                    {datum.projected && (
-                                        <div className="text-xs text-accent">Projected</div>
+                                    {datum.type === "projected" && (
+                                        <div className="text-[10px] text-muted-foreground italic">Forecast</div>
                                     )}
                                 </div>
                             );
@@ -256,14 +203,13 @@ export function SimulationChart({
                 </XYChart>
             </div>
 
-            {/* Legend */}
-            <div className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                    <div className="h-0.5 w-4 rounded bg-accent" />
-                    <span>Current</span>
+            <div className="mt-3 flex items-center justify-center gap-6 text-[10px] uppercase text-[#666] tracking-wider font-semibold">
+                <div className="flex items-center gap-2">
+                    <div className="w-3 h-0.5 bg-[#333]"></div>
+                    <span>Historical</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                    <div className="h-0.5 w-4 rounded bg-accent-secondary" style={{ background: "repeating-linear-gradient(90deg, #4D7CFF, #4D7CFF 4px, transparent 4px, transparent 8px)" }} />
+                <div className="flex items-center gap-2">
+                    <div className="w-3 h-0.5 border-t border-dashed border-CURRENT" style={{ borderColor: isPositive ? "#16a34a" : "#dc2626" }}></div>
                     <span>Projected</span>
                 </div>
             </div>
