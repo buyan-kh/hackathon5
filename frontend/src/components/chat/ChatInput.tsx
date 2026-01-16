@@ -22,6 +22,7 @@ interface ChatInputProps {
     onSubmit?: (message: string) => void;
     onPaperGenerated?: (paper: Record<string, unknown>) => void;
     showGreeting?: boolean;
+    onEditorReady?: (editor: Editor) => void;
 }
 
 const chatModes = [
@@ -30,7 +31,7 @@ const chatModes = [
     { id: "paper" as const, label: "Paper", icon: IconNews, description: "Tomorrow's news" },
 ];
 
-export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: ChatInputProps) {
+export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true, onEditorReady }: ChatInputProps) {
     const editorRef = useRef<Editor | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const [hasContent, setHasContent] = useState(false);
@@ -91,6 +92,16 @@ export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: C
                     } else if (data.event_type === "complete") {
                         console.log("🎉 Generation complete:", data.data);
                         setIsGenerating(false);
+                        // Mark any remaining running agents as completed
+                        const state = useChatStore.getState();
+                        state.agents.forEach((agent) => {
+                            if (agent.status === "running") {
+                                updateAgentStatus(agent.id, {
+                                    status: "completed",
+                                    progress: 100,
+                                });
+                            }
+                        });
                         resetAgents();
 
                         // Pass paper to parent and save to thread
@@ -102,12 +113,35 @@ export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: C
                             // Save paper to current thread for history
                             const threadId = useChatStore.getState().currentThreadId;
                             if (threadId) {
+                                // Only save URLs, not base64 images to prevent localStorage quota issues
+                                const coverImage = paper.cover_image_url?.startsWith('data:') 
+                                    ? undefined 
+                                    : paper.cover_image_url;
+                                
                                 setPaperData(threadId, {
                                     id: paper.paper_id,
                                     headline: paper.headline,
-                                    articles: paper.articles || [],
+                                    subheadline: paper.subheadline,
+                                    date: paper.date,
+                                    query: paper.query,
+                                    articles: (paper.articles || []).map(article => ({
+                                        ...article,
+                                        // Remove base64 images from articles too
+                                        image: article.image?.startsWith('data:') 
+                                            ? undefined 
+                                            : article.image,
+                                    })),
                                     generatedAt: new Date(),
-                                    coverImage: paper.cover_image_url,
+                                    coverImage,
+                                    secondaryImageUrl: paper.secondary_image_url?.startsWith('data:') 
+                                        ? undefined 
+                                        : paper.secondary_image_url,
+                                    tertiaryImageUrl: paper.tertiary_image_url?.startsWith('data:') 
+                                        ? undefined 
+                                        : paper.tertiary_image_url,
+                                    marketSnapshot: paper.market_snapshot,
+                                    trendingTopics: paper.trending_topics,
+                                    newsContext: paper.news_context,
                                 });
                             }
                         }
@@ -179,7 +213,8 @@ export function ChatInput({ onSubmit, onPaperGenerated, showGreeting = true }: C
         editor.on("update", () => {
             setHasContent(!!editor.getText().trim());
         });
-    }, []);
+        onEditorReady?.(editor);
+    }, [onEditorReady]);
 
     const handleStop = useCallback(() => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {

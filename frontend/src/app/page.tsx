@@ -28,8 +28,12 @@ interface Paper {
   market_snapshot: Array<{
     asset: string;
     value: number;
+    current_value?: number;
+    projected_value?: number;
     change: number;
     changePercent: number;
+    change_percent?: number;
+    history?: Array<{ date: string; value: number }>;
   }>;
   trending_topics: Array<{
     topic: string;
@@ -66,6 +70,19 @@ export default function Home() {
     setGeneratedPaper(null);
   }, []);
 
+  const handleTopicClick = useCallback((topic: string) => {
+    // Navigate back to chat and set the topic as a new query
+    setGeneratedPaper(null);
+    // Small delay to ensure state updates, then trigger query
+    setTimeout(() => {
+      if (editorRef.current) {
+        editorRef.current.commands.clearContent();
+        editorRef.current.commands.insertContent(`What happens if ${topic}?`);
+        editorRef.current.commands.focus("end");
+      }
+    }, 100);
+  }, []);
+
   // Show the paper if generated
   if (generatedPaper) {
     return (
@@ -75,11 +92,31 @@ export default function Home() {
           isOpen={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
           onSelectThread={(thread) => {
-            // If thread has paper data, we could re-display it
-            // For now we'll just go back to main to start a new query
-            // based on the previous one
+            // If thread has paper data, reconstruct and display the paper
             if (thread.paperData) {
-              console.log("Loading paper from history:", thread.paperData);
+              const paperData = thread.paperData;
+              const reconstructedPaper: Paper = {
+                paper_id: paperData.id,
+                date: paperData.date || new Date(paperData.generatedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                headline: paperData.headline,
+                subheadline: paperData.subheadline || `Comprehensive coverage: ${paperData.query || 'Market analysis'}`,
+                query: paperData.query || thread.messages[0]?.content || '',
+                cover_image_url: paperData.coverImage || null,
+                secondary_image_url: paperData.secondaryImageUrl || null,
+                tertiary_image_url: paperData.tertiaryImageUrl || null,
+                articles: paperData.articles.map(article => ({
+                  id: article.id,
+                  title: article.title,
+                  content: article.content,
+                  summary: article.content.slice(0, 150) + '...',
+                  category: article.category || 'general',
+                  importance: 5,
+                })),
+                market_snapshot: paperData.marketSnapshot || [],
+                trending_topics: paperData.trendingTopics || [],
+                news_context: paperData.newsContext || [],
+              };
+              setGeneratedPaper(reconstructedPaper);
             }
           }}
         />
@@ -122,6 +159,7 @@ export default function Home() {
             trendingTopics={generatedPaper.trending_topics}
             newsContext={generatedPaper.news_context}
             query={generatedPaper.query}
+            onTopicClick={handleTopicClick}
           />
         </div>
       </main>
@@ -131,7 +169,38 @@ export default function Home() {
   return (
     <main className="relative min-h-screen flex flex-col">
       {/* Thread Sidebar */}
-      <ThreadSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <ThreadSidebar 
+        isOpen={sidebarOpen} 
+        onClose={() => setSidebarOpen(false)}
+        onSelectThread={(thread) => {
+          // If thread has paper data, reconstruct and display the paper
+          if (thread.paperData) {
+            const paperData = thread.paperData;
+            const reconstructedPaper: Paper = {
+              paper_id: paperData.id,
+              date: paperData.date || new Date(paperData.generatedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+              headline: paperData.headline,
+              subheadline: paperData.subheadline || `Comprehensive coverage: ${paperData.query || 'Market analysis'}`,
+              query: paperData.query || thread.messages[0]?.content || '',
+              cover_image_url: paperData.coverImage || null,
+              secondary_image_url: paperData.secondaryImageUrl || null,
+              tertiary_image_url: paperData.tertiaryImageUrl || null,
+              articles: paperData.articles.map(article => ({
+                id: article.id,
+                title: article.title,
+                content: article.content,
+                summary: article.content.slice(0, 150) + '...',
+                category: article.category || 'general',
+                importance: 5,
+              })),
+              market_snapshot: paperData.marketSnapshot || [],
+              trending_topics: paperData.trendingTopics || [],
+              news_context: paperData.newsContext || [],
+            };
+            setGeneratedPaper(reconstructedPaper);
+          }
+        }}
+      />
 
       {/* Background Effects */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
@@ -186,7 +255,12 @@ export default function Home() {
 
           {/* Chat Input */}
           <div className="w-full mt-4">
-            <ChatInput onPaperGenerated={(paper) => setGeneratedPaper(paper as Paper)} />
+            <ChatInput 
+              onPaperGenerated={(paper) => setGeneratedPaper(paper as Paper)}
+              onEditorReady={(editor) => {
+                editorRef.current = editor;
+              }}
+            />
           </div>
 
           {/* Example Prompts */}

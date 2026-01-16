@@ -133,6 +133,36 @@ class FabricateAgent:
         logger.info("🧪 [FABRICATE] Testing API connection...")
         return await self.list_workspaces()
     
+    async def generate_headline(self, topic: str, context: str = "general") -> str:
+        """
+        Generate a synthetic headline using Fabricate's generative engine.
+        In a real scenario, this would hit an LLM endpoint.
+        Here we simulate the network latency and return a generated response.
+        """
+        import asyncio
+        import random
+        
+        logger.info(f"🏭 [FABRICATE] Generating headline for topic: {topic} ({context})")
+        
+        # Simulate API network latency (0.5 - 1.5s)
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        
+        # Advanced template engine to simulate LLM output
+        templates = [
+            f"Global Markets Rattle as {topic} Scenario Intensifies",
+            f"Exclusive: Inside the {topic} Crisis - What Traders Need to Know",
+            f"Breaking: {topic} Sparks Volatility Across Major Indices",
+            f"Analysis: How the {topic} Situation Could Reshape the Economy",
+            f"Live Updates: diplomatic tensions rise over {topic}",
+            f"Projected: {topic} Impact on Supply Chains 'Severe'",
+            f"Urgent: Central Banks Monitor {topic} Developments Closely",
+            f"Opinion: Why the {topic} Event Was Inevitable",
+        ]
+        
+        headline = random.choice(templates)
+        logger.info(f"✅ [FABRICATE] Generated: {headline}")
+        return headline
+
     async def close(self):
         await self.client.aclose()
 

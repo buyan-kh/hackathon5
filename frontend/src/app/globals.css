@@ -91,21 +91,46 @@
 
 html {
   scroll-behavior: smooth;
-  color-scheme: light;
+  color-scheme: light !important;
+  background-color: #FAFAFA !important;
 }
 
-/* Force light mode on html element */
+/* Force light mode on html element - override any dark mode classes */
 html[data-theme="dark"],
-html.dark {
+html.dark,
+html[class*="dark"] {
   color-scheme: light !important;
+  background-color: #FAFAFA !important;
+}
+
+/* Prevent Tailwind dark mode */
+@media (prefers-color-scheme: dark) {
+  html,
+  html * {
+    color-scheme: light !important;
+  }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--background) !important;
+  color: var(--foreground) !important;
   font-family: var(--font-inter, 'Inter', system-ui, sans-serif);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Force light mode on body - override any dark mode */
+body.dark,
+body[data-theme="dark"] {
+  background: #FAFAFA !important;
+  color: #0F172A !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #FAFAFA !important;
+    color: #0F172A !important;
+  }
 }
 
 /* ===== TYPOGRAPHY ===== */

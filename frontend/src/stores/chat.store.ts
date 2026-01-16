@@ -1,5 +1,91 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+
+// Helper function to safely get timestamp from Date object or date string
+const getTimestamp = (date: Date | string | null | undefined): number => {
+    if (!date) {
+        return 0;
+    }
+    if (date instanceof Date) {
+        const time = date.getTime();
+        return isNaN(time) ? 0 : time;
+    }
+    if (typeof date === 'string') {
+        const parsed = new Date(date);
+        const time = parsed.getTime();
+        return isNaN(time) ? 0 : time;
+    }
+    return 0;
+};
+
+// Custom storage wrapper with quota error handling
+const createSafeStorage = () => {
+    const storage = {
+        getItem: (name: string): string | null => {
+            try {
+                return localStorage.getItem(name);
+            } catch (error) {
+                console.error('Error reading from localStorage:', error);
+                return null;
+            }
+        },
+        setItem: (name: string, value: string): void => {
+            try {
+                localStorage.setItem(name, value);
+            } catch (error) {
+                if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+                    console.warn('⚠️ localStorage quota exceeded. Attempting cleanup...');
+                    // Try to clear old data and retry
+                    try {
+                        const current = localStorage.getItem(name);
+                        if (current) {
+                            const parsed = JSON.parse(current);
+                            if (parsed?.state?.threads) {
+                                // Keep only last 5 threads
+                                const limitedThreads = parsed.state.threads
+                                    .sort((a: any, b: any) => {
+                                        const timeA = typeof a.updatedAt === 'string' 
+                                            ? new Date(a.updatedAt).getTime() 
+                                            : (a.updatedAt?.getTime?.() || 0);
+                                        const timeB = typeof b.updatedAt === 'string' 
+                                            ? new Date(b.updatedAt).getTime() 
+                                            : (b.updatedAt?.getTime?.() || 0);
+                                        return timeB - timeA;
+                                    })
+                                    .slice(0, 5)
+                                    .map((thread: any) => ({
+                                        ...thread,
+                                        paperData: thread.paperData ? {
+                                            ...thread.paperData,
+                                            coverImage: undefined,
+                                        } : undefined,
+                                    }));
+                                
+                                parsed.state.threads = limitedThreads;
+                                localStorage.setItem(name, JSON.stringify(parsed));
+                                return;
+                            }
+                        }
+                    } catch (cleanupError) {
+                        console.error('Error during cleanup:', cleanupError);
+                        // If cleanup fails, clear everything
+                        localStorage.removeItem(name);
+                    }
+                } else {
+                    console.error('Error writing to localStorage:', error);
+                }
+            }
+        },
+        removeItem: (name: string): void => {
+            try {
+                localStorage.removeItem(name);
+            } catch (error) {
+                console.error('Error removing from localStorage:', error);
+            }
+        },
+    };
+    return storage;
+};
 
 export interface Message {
     id: string;
@@ -43,9 +129,31 @@ export interface SimulationResult {
 export interface PaperData {
     id: string;
     headline: string;
+    subheadline?: string;
+    date?: string;
+    query?: string;
     articles: Article[];
     generatedAt: Date;
     coverImage?: string;
+    secondaryImageUrl?: string;
+    tertiaryImageUrl?: string;
+    marketSnapshot?: Array<{
+        asset: string;
+        value: number;
+        change: number;
+        changePercent: number;
+    }>;
+    trendingTopics?: Array<{
+        topic: string;
+        sentiment: number;
+        mentions: number;
+    }>;
+    newsContext?: Array<{
+        title: string;
+        source: string;
+        content?: string;
+        agent?: string;
+    }>;
 }
 
 export interface Article {
@@ -110,19 +218,49 @@ export const useChatStore = create<ChatState>()(
             chatMode: "paper",
 
             createThread: (title: string) => {
-                const id = crypto.randomUUID();
-                const newThread: Thread = {
-                    id,
-                    title,
-                    messages: [],
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                };
-                set((state) => ({
-                    threads: [newThread, ...state.threads],
-                    currentThreadId: id,
-                }));
-                return id;
+                try {
+                    const id = crypto.randomUUID();
+                    const newThread: Thread = {
+                        id,
+                        title,
+                        messages: [],
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                    };
+                    set((state) => {
+                        // Limit to 20 threads max to prevent quota issues
+                        const updatedThreads = [newThread, ...state.threads].slice(0, 20);
+                        return {
+                            threads: updatedThreads,
+                            currentThreadId: id,
+                        };
+                    });
+                    return id;
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+                        console.warn('⚠️ localStorage quota exceeded. Clearing old threads...');
+                        const state = get();
+                        const recentThreads = state.threads
+                            .sort((a, b) => getTimestamp(b.updatedAt) - getTimestamp(a.updatedAt))
+                            .slice(0, 10);
+                        
+                        const id = crypto.randomUUID();
+                        const newThread: Thread = {
+                            id,
+                            title,
+                            messages: [],
+                            createdAt: new Date(),
+                            updatedAt: new Date(),
+                        };
+                        
+                        set({
+                            threads: [newThread, ...recentThreads],
+                            currentThreadId: id,
+                        });
+                        return id;
+                    }
+                    throw error;
+                }
             },
 
             setCurrentThread: (threadId) => set({ currentThreadId: threadId }),
@@ -187,13 +325,47 @@ export const useChatStore = create<ChatState>()(
             },
 
             setPaperData: (threadId, data) => {
-                set((state) => ({
-                    threads: state.threads.map((thread) =>
-                        thread.id === threadId
-                            ? { ...thread, paperData: data, updatedAt: new Date() }
-                            : thread
-                    ),
-                }));
+                try {
+                    // Strip base64 images to prevent localStorage quota issues
+                    const sanitizedData: PaperData = {
+                        ...data,
+                        coverImage: data.coverImage?.startsWith('data:') ? undefined : data.coverImage,
+                    };
+                    
+                    set((state) => ({
+                        threads: state.threads.map((thread) =>
+                            thread.id === threadId
+                                ? { ...thread, paperData: sanitizedData, updatedAt: new Date() }
+                                : thread
+                        ),
+                    }));
+                } catch (error) {
+                    // Handle quota exceeded error
+                    if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+                        console.warn('⚠️ localStorage quota exceeded. Clearing old threads...');
+                        // Keep only the most recent 10 threads
+                        const state = get();
+                        const recentThreads = state.threads
+                            .sort((a, b) => getTimestamp(b.updatedAt) - getTimestamp(a.updatedAt))
+                            .slice(0, 10);
+                        
+                        set({
+                            threads: recentThreads,
+                            currentThreadId: state.currentThreadId,
+                        });
+                        
+                        // Retry setting paper data
+                        set((state) => ({
+                            threads: state.threads.map((thread) =>
+                                thread.id === threadId
+                                    ? { ...thread, paperData: { ...data, coverImage: undefined }, updatedAt: new Date() }
+                                    : thread
+                            ),
+                        }));
+                    } else {
+                        console.error('Error setting paper data:', error);
+                    }
+                }
             },
 
             clearThread: (threadId) => {
@@ -206,11 +378,101 @@ export const useChatStore = create<ChatState>()(
         }),
         {
             name: "tomorrows-paper-chat",
-            partialize: (state) => ({
-                threads: state.threads,
-                chatMode: state.chatMode,
-                useWebSearch: state.useWebSearch,
-            }),
+            storage: createJSONStorage(() => createSafeStorage()),
+            partialize: (state) => {
+                try {
+                    // Limit threads to prevent quota issues (keep last 20)
+                    // Filter out any invalid threads and ensure updatedAt exists
+                    const validThreads = (state.threads || [])
+                        .map(thread => {
+                            // Ensure updatedAt exists and is valid
+                            if (!thread.updatedAt) {
+                                // If missing, use createdAt or current time
+                                return {
+                                    ...thread,
+                                    updatedAt: thread.createdAt || new Date(),
+                                };
+                            }
+                            return thread;
+                        })
+                        .filter(thread => thread && thread.id && thread.updatedAt);
+                    
+                    const limitedThreads = validThreads
+                        .sort((a, b) => {
+                            try {
+                                // Handle both Date objects and date strings
+                                const timeA = getTimestamp(a.updatedAt);
+                                const timeB = getTimestamp(b.updatedAt);
+                                return timeB - timeA;
+                            } catch (e) {
+                                console.warn('Error sorting threads:', e);
+                                // Fallback: use thread ID for consistent ordering
+                                return a.id.localeCompare(b.id);
+                            }
+                        })
+                        .slice(0, 20)
+                        .map(thread => ({
+                            ...thread,
+                            // Remove base64 images from persisted data
+                            paperData: thread.paperData ? {
+                                ...thread.paperData,
+                                coverImage: thread.paperData.coverImage?.startsWith('data:') 
+                                    ? undefined 
+                                    : thread.paperData.coverImage,
+                            } : undefined,
+                        }));
+                    
+                    return {
+                        threads: limitedThreads,
+                        chatMode: state.chatMode,
+                        useWebSearch: state.useWebSearch,
+                    };
+                } catch (error) {
+                    console.error('Error in partialize:', error);
+                    // Return minimal safe state
+                    return {
+                        threads: [],
+                        chatMode: state.chatMode || 'paper',
+                        useWebSearch: state.useWebSearch ?? true,
+                    };
+                }
+            },
+            onRehydrateStorage: () => {
+                return (state, error) => {
+                    if (error) {
+                        console.error('Error rehydrating store:', error);
+                        // Clear corrupted data
+                        if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+                            localStorage.removeItem('tomorrows-paper-chat');
+                        }
+                    } else if (state) {
+                        // Convert date strings back to Date objects after rehydration
+                        if (state.threads) {
+                            state.threads = state.threads.map(thread => ({
+                                ...thread,
+                                createdAt: typeof thread.createdAt === 'string' 
+                                    ? new Date(thread.createdAt) 
+                                    : thread.createdAt,
+                                updatedAt: typeof thread.updatedAt === 'string' 
+                                    ? new Date(thread.updatedAt) 
+                                    : thread.updatedAt,
+                                messages: thread.messages?.map(msg => ({
+                                    ...msg,
+                                    timestamp: typeof msg.timestamp === 'string' 
+                                        ? new Date(msg.timestamp) 
+                                        : msg.timestamp,
+                                })) || [],
+                                paperData: thread.paperData ? {
+                                    ...thread.paperData,
+                                    generatedAt: typeof thread.paperData.generatedAt === 'string'
+                                        ? new Date(thread.paperData.generatedAt)
+                                        : thread.paperData.generatedAt,
+                                } : undefined,
+                            }));
+                        }
+                    }
+                };
+            },
         }
     )
 );

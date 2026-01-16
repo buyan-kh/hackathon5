@@ -112,7 +112,7 @@ export function SimulationChart({
                 </div>
                 <div className="text-right">
                     <div className="text-2xl font-bold tabular-nums">
-                        {asset.projected_value.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        {asset.projected_value ? asset.projected_value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "N/A"}
                     </div>
                     <div className={cn(
                         "text-xs font-bold",
