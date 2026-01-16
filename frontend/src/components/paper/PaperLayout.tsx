@@ -86,16 +86,18 @@ export function PaperLayout({
                         <div key={item.asset} className="flex items-center gap-2">
                             <span className="font-semibold text-[#333]">{item.asset}</span>
                             <span className="text-[#666]">
-                                {item.asset === "VIX" ? item.value.toFixed(2) : item.value.toLocaleString()}
+                                {item.asset === "VIX"
+                                    ? (item.value || 0).toFixed(2)
+                                    : (item.value || 0).toLocaleString()}
                             </span>
                             <span
                                 className={cn(
                                     "flex items-center gap-0.5",
-                                    item.changePercent >= 0 ? "text-green-600" : "text-red-600"
+                                    (item.changePercent || 0) >= 0 ? "text-green-600" : "text-red-600"
                                 )}
                             >
-                                {item.changePercent >= 0 ? <IconTrendingUp size={12} /> : <IconTrendingDown size={12} />}
-                                {item.changePercent >= 0 ? "+" : ""}{item.changePercent.toFixed(2)}%
+                                {(item.changePercent || 0) >= 0 ? <IconTrendingUp size={12} /> : <IconTrendingDown size={12} />}
+                                {(item.changePercent || 0) >= 0 ? "+" : ""}{(item.changePercent || 0).toFixed(2)}%
                             </span>
                             {i < marketSnapshot.length - 1 && <span className="text-[#ccc] mx-2">│</span>}
                         </div>
