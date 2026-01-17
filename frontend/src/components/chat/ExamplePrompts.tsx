@@ -81,7 +81,7 @@ export function ExamplePrompts({ onSelect }: ExamplePromptsProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, delay: 0.3 }}
-            className="w-full px-6 pb-8"
+            className="w-full px-6 pt-5 pb-8"
         >
             <div className="flex flex-wrap justify-center gap-2">
                 {promptCategories.map((category, index) => (

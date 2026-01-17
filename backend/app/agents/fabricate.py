@@ -133,6 +133,69 @@ class FabricateAgent:
         logger.info("🧪 [FABRICATE] Testing API connection...")
         return await self.list_workspaces()
     
+    async def generate_headline(self, topic: str, context: str = "general") -> str:
+        """
+        Generate a synthetic headline using Fabricate's generative engine.
+        In a real scenario, this would hit an LLM endpoint.
+        Here we simulate the network latency and return a generated response.
+        """
+        import asyncio
+        import random
+        
+        logger.info(f"🏭 [FABRICATE] Generating headline for topic: {topic} ({context})")
+        
+        # Simulate API network latency (0.5 - 1.5s)
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        
+        # Advanced template engine to simulate LLM output
+        templates = [
+            f"Global Markets Rattle as {topic} Scenario Intensifies",
+            f"Exclusive: Inside the {topic} Crisis - What Traders Need to Know",
+            f"Breaking: {topic} Sparks Volatility Across Major Indices",
+            f"Analysis: How the {topic} Situation Could Reshape the Economy",
+            f"Live Updates: diplomatic tensions rise over {topic}",
+            f"Projected: {topic} Impact on Supply Chains 'Severe'",
+            f"Urgent: Central Banks Monitor {topic} Developments Closely",
+            f"Opinion: Why the {topic} Event Was Inevitable",
+        ]
+        
+        headline = random.choice(templates)
+        logger.info(f"✅ [FABRICATE] Generated: {headline}")
+        return headline
+
+    async def generate_market_analysis(self, context_data: str) -> dict:
+        """
+        Generate a short market analysis piece based on provided context.
+        """
+        import asyncio
+        import random
+        await asyncio.sleep(0.8) # Simulate LLM generation
+        
+        # In a real version, we'd send 'context_data' to an LLM
+        # Here we extract a key topic or fallback
+        topic = "Market"
+        if context_data and len(context_data) > 300:
+             # Basic keyword extraction simulation
+             if "crypto" in context_data.lower(): topic = "Crypto"
+             elif "tech" in context_data.lower(): topic = "Tech Sector"
+             elif "rates" in context_data.lower(): topic = "Interest Rates"
+             elif "china" in context_data.lower(): topic = "China Markets"
+        
+        headlines = [
+            f"Deep Dive: {topic} Volatility Explained",
+            f"Institutional Flows Shift in {topic}",
+            f"Three Key Indicators for {topic} This Week",
+            f"Contra-View: Why {topic} Might Surprise"
+        ]
+        
+        summary = f"Analysts suggest that recent movements in {topic} are driven by underlying structural shifts. While short-term volatility persists, long-term indicators point towards a consolidation phase. Key resistance levels are being tested as volume increases."
+        
+        return {
+            "title": random.choice(headlines),
+            "summary": summary,
+            "topic": topic
+        }
+
     async def close(self):
         await self.client.aclose()
 
