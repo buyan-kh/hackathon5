@@ -163,6 +163,39 @@ class FabricateAgent:
         logger.info(f"✅ [FABRICATE] Generated: {headline}")
         return headline
 
+    async def generate_market_analysis(self, context_data: str) -> dict:
+        """
+        Generate a short market analysis piece based on provided context.
+        """
+        import asyncio
+        import random
+        await asyncio.sleep(0.8) # Simulate LLM generation
+        
+        # In a real version, we'd send 'context_data' to an LLM
+        # Here we extract a key topic or fallback
+        topic = "Market"
+        if context_data and len(context_data) > 300:
+             # Basic keyword extraction simulation
+             if "crypto" in context_data.lower(): topic = "Crypto"
+             elif "tech" in context_data.lower(): topic = "Tech Sector"
+             elif "rates" in context_data.lower(): topic = "Interest Rates"
+             elif "china" in context_data.lower(): topic = "China Markets"
+        
+        headlines = [
+            f"Deep Dive: {topic} Volatility Explained",
+            f"Institutional Flows Shift in {topic}",
+            f"Three Key Indicators for {topic} This Week",
+            f"Contra-View: Why {topic} Might Surprise"
+        ]
+        
+        summary = f"Analysts suggest that recent movements in {topic} are driven by underlying structural shifts. While short-term volatility persists, long-term indicators point towards a consolidation phase. Key resistance levels are being tested as volume increases."
+        
+        return {
+            "title": random.choice(headlines),
+            "summary": summary,
+            "topic": topic
+        }
+
     async def close(self):
         await self.client.aclose()
 

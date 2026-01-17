@@ -13,7 +13,11 @@ import httpx
 import logging
 from dataclasses import dataclass
 from app.core.config import get_settings
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    # Fallback for old package name
+    from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +26,11 @@ logger = logging.getLogger(__name__)
 class YutoriResearchResult:
     """Result from a Yutori research task."""
     task_id: str
-    status: str
-    view_url: str | None = None
-    content: str | None = None
-    sources: list[dict] = None
-    error: str | None = None
+    status: str  # "pending", "running", "completed", "error"
+    sources: list = None
+    view_url: str = None
+    content: str = None
+    error: str = None
     
     def __post_init__(self):
         if self.sources is None:
@@ -37,44 +41,42 @@ class YutoriAgent:
     """Agent for web research using Yutori API."""
     
     def __init__(self):
-        settings = get_settings()
-        self.api_key = settings.yutori_api_key
-        self.base_url = settings.yutori_base_url
-        
-        logger.info(f"🔑 Yutori API Key configured: {'Yes' if self.api_key else 'No'}")
-        logger.info(f"🌐 Yutori Base URL: {self.base_url}")
+        self.settings = get_settings()
+        self.base_url = "https://api.yutori.com/v1" 
+        self.api_key = self.settings.yutori_api_key
         
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
-                "X-API-Key": self.api_key,
+                "Authorization": f"Bearer {self.api_key}" if self.api_key else None,
                 "Content-Type": "application/json",
             },
-            timeout=60.0,
+            timeout=30.0,
         )
-    
-    async def research(self, query: str, webhook_url: str | None = None) -> YutoriResearchResult:
-        """Launch a one-time deep research task."""
-        payload = {"query": query}
-        if webhook_url:
-            payload["webhook_url"] = webhook_url
-        
-        logger.info(f"🔍 [YUTORI] Starting research: {query[:50]}...")
+        self.logger = logger
+
+    async def create_research_task(self, query: str, max_results: int = 10) -> YutoriResearchResult:
+        """Create a new research task."""
+        logger.info(f"🔍 [YUTORI] Creating research task: {query[:100]}")
         
         try:
-            response = await self.client.post("/research/tasks", json=payload)
-            
-            logger.info(f"🔍 [YUTORI] Response status: {response.status_code}")
-            logger.debug(f"🔍 [YUTORI] Response body: {response.text[:500]}")
+            response = await self.client.post(
+                "/research/tasks",
+                json={
+                    "query": query,
+                    "max_results": max_results,
+                }
+            )
             
             response.raise_for_status()
             data = response.json()
             
-            logger.info(f"✅ [YUTORI] Task created: {data.get('task_id')}")
+            task_id = data.get("task_id")
+            logger.info(f"✅ [YUTORI] Created task: {task_id}")
             
             return YutoriResearchResult(
-                task_id=data.get("task_id", ""),
-                status=data.get("status", "queued"),
+                task_id=task_id,
+                status="pending",
                 view_url=data.get("view_url"),
             )
         except httpx.HTTPStatusError as e:
@@ -203,30 +205,8 @@ class YutoriAgent:
         import asyncio
         import time
         
-    async def deep_read(self, url: str) -> str:
-        """
-        Level 1 Agentic: Deep Reading
-        Uses Jina Reader to convert a URL into clean, LLM-friendly markdown.
-        """
-        logger.info(f"📖 [YUTORI] Deep reading: {url}")
-        try:
-            # Jina Reader is a free API that converts any URL to markdown
-            reader_url = f"https://r.jina.ai/{url}"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(reader_url)
-                if response.status_code == 200:
-                    content = response.text
-                    # Limit content length to avoid overflowing context
-                    return content[:5000] 
-                else:
-                    logger.warning(f"⚠️ [YUTORI] Jina Reader failed: {response.status_code}")
-                    return ""
-        except Exception as e:
-            logger.error(f"❌ [YUTORI] Deep read error: {e}")
-            return ""
-
-    # Clean and optimize query
-    def clean_query(q: str) -> str:
+        # Clean and optimize query
+        def clean_query(q: str) -> str:
             # Remove special characters that might cause issues
             q = q.replace('$', '').replace('€', '').replace('£', '').replace('%', '')
             # Remove extra whitespace
@@ -236,65 +216,81 @@ class YutoriAgent:
                 words = q.split()
                 # Keep first 10 words max
                 q = ' '.join(words[:10])
-            return q
+            return q.strip()
         
         cleaned_query = clean_query(query)
+        logger.info(f"🔍 [FAST] Cleaned query: '{cleaned_query}'")
         
-        # Try multiple backends in order of reliability
-        backends = ["api", "html", "lite"]
-        
-        for backend in backends:
-            try:
-                def run_search():
-                    try:
-                        # Add small delay to avoid rate limiting
-                        time.sleep(0.3)
-                        with DDGS() as ddgs:
-                            results = list(ddgs.text(cleaned_query, max_results=max_results, backend=backend))
-                            logger.debug(f"🔍 [FAST] Backend '{backend}' returned {len(results)} raw results for: {cleaned_query[:50]}")
-                            return results
-                    except Exception as e:
-                        logger.warning(f"⚠️ [FAST] Backend '{backend}' failed: {type(e).__name__}: {str(e)[:100]}")
-                        return []
-                
-                loop = asyncio.get_running_loop()
-                results = await loop.run_in_executor(None, run_search)
-                
-                # If we got results, process them
-                if results:
-                    sources = []
-                    for r in results:
-                        title = r.get('title') or r.get('text', 'No Title')
-                        url = r.get('href') or r.get('url', '#')
-                        snippet = r.get('body') or r.get('snippet') or r.get('text', '')
-                        
-                        # More lenient validation - accept if we have title OR snippet
-                        if title and title != 'No Title' and len(title.strip()) > 3:
-                            sources.append({
-                                "title": title.strip(),
-                                "url": url if url else '#',
-                                "snippet": (snippet[:500] if snippet else "").strip()
-                            })
+        # Use 'auto' backend (handles backend selection automatically, recommended)
+        try:
+            def run_search():
+                try:
+                    # Add delay to avoid rate limiting
+                    time.sleep(1.5)  # Increased delay
+                    logger.debug(f"🔍 [FAST] Searching with query: '{cleaned_query}'")
                     
-                    if sources:
-                        logger.info(f"✅ [FAST] Found {len(sources)} valid results using backend '{backend}' for: {cleaned_query[:50]}")
-                        return YutoriResearchResult(
-                            task_id=f"fast-{hash(query)}",
-                            status="completed",
-                            sources=sources
-                        )
+                    # Use 'auto' backend (recommended, handles backend selection automatically)
+                    ddgs = DDGS()
+                    # Suppress warnings about deprecated backend parameter
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        results = list(ddgs.text(cleaned_query, max_results=max_results, backend="auto"))
+                    
+                    logger.debug(f"🔍 [FAST] Backend 'auto' returned {len(results)} raw results for: '{cleaned_query}'")
+                    if results:
+                        logger.debug(f"🔍 [FAST] First result keys: {list(results[0].keys()) if results else 'none'}")
+                    return results
+                except Exception as e:
+                    error_msg = f"{type(e).__name__}: {str(e)}"
+                    logger.error(f"❌ [FAST] Search failed: {error_msg}")
+                    logger.exception(f"Full exception:")
+                    return []
+            
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(None, run_search)
+            
+            # If we got results, process them
+            if results and len(results) > 0:
+                sources = []
+                for r in results:
+                    # Handle different result formats from DDGS
+                    title = r.get('title') or r.get('text') or r.get('heading') or 'No Title'
+                    url = r.get('href') or r.get('url') or r.get('link') or '#'
+                    snippet = r.get('body') or r.get('snippet') or r.get('text') or r.get('description') or ''
+                    
+                    # More lenient validation - accept if we have title OR snippet
+                    if title and title != 'No Title' and len(title.strip()) > 3:
+                        sources.append({
+                            "title": title.strip(),
+                            "url": url if url else '#',
+                            "snippet": (snippet[:500] if snippet else "").strip()
+                        })
                 
-                # If no results, try next backend
-                logger.debug(f"⚠️ [FAST] Backend '{backend}' returned 0 valid results, trying next...")
+                if sources:
+                    logger.info(f"✅ [FAST] Found {len(sources)} valid results using backend 'auto' for: {cleaned_query[:50]}")
+                    return YutoriResearchResult(
+                        task_id=f"fast-{hash(query)}",
+                        status="completed",
+                        sources=sources
+                    )
+                else:
+                    logger.warning(f"⚠️ [FAST] Got {len(results)} raw results but 0 valid sources after processing for: '{cleaned_query}'")
+                    # Log first result structure to debug
+                    if results:
+                        logger.debug(f"🔍 Sample result keys: {list(results[0].keys()) if results else 'none'}")
+                        logger.debug(f"🔍 Sample result: {results[0] if results else 'none'}")
+            else:
+                logger.warning(f"⚠️ [FAST] Backend 'auto' returned 0 raw results for '{cleaned_query}'")
                 
-            except Exception as e:
-                logger.warning(f"⚠️ [FAST] Backend '{backend}' exception: {type(e).__name__}: {str(e)[:100]}")
-                # Add delay before trying next backend
-                await asyncio.sleep(0.5)
-                continue
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"❌ [FAST] Search exception: {error_msg}")
+            logger.exception(f"Full exception traceback:")
+            results = []
         
         # If all backends failed, try simplified query
-        logger.warning(f"⚠️ [FAST] All backends failed for '{query[:50]}', trying simplified query...")
+        logger.warning(f"⚠️ [FAST] Primary search failed for '{query[:50]}', trying simplified query...")
         try:
             # Extract key terms - take first 5-7 most important words
             words = cleaned_query.split()
@@ -311,12 +307,12 @@ class YutoriAgent:
                     
                 def run_simple_search():
                     try:
-                        time.sleep(0.5)  # Longer delay for retry
+                        time.sleep(1.5)  # Longer delay for retry
                         import warnings
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore")
-                            with DDGS() as ddgs:
-                                return list(ddgs.text(simple_query, max_results=max_results, backend="api"))
+                            ddgs = DDGS()
+                            return list(ddgs.text(simple_query, max_results=max_results, backend="auto"))
                     except Exception as e:
                         logger.debug(f"Simplified search failed: {e}")
                         return []
@@ -327,9 +323,9 @@ class YutoriAgent:
                 if results:
                     sources = []
                     for r in results:
-                        title = r.get('title') or r.get('text', 'No Title')
-                        url = r.get('href') or r.get('url', '#')
-                        snippet = r.get('body') or r.get('snippet') or r.get('text', '')
+                        title = r.get('title') or r.get('text') or r.get('heading') or 'No Title'
+                        url = r.get('href') or r.get('url') or r.get('link') or '#'
+                        snippet = r.get('body') or r.get('snippet') or r.get('text') or r.get('description') or ''
                         
                         if title and title != 'No Title' and len(title.strip()) > 3:
                             sources.append({

@@ -79,12 +79,108 @@ class AgentOrchestrator:
         images = []
         
         try:
+            # SIMULATE MODE: Focus on market simulation only
+            if mode == "simulate":
+                yield OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FABRICATE,
+                    data={"status": "running", "progress": 10, "task": "Analyzing query to determine relevant assets..."}
+                )
+                
+                # Determine which assets to track based on query
+                relevant_assets = self._identify_relevant_assets(query)
+                logger.info(f"📊 [SIMULATE] Identified assets: {relevant_assets}")
+                
+                yield OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FABRICATE,
+                    data={"status": "running", "progress": 30, "task": f"Fetching historical data for {len(relevant_assets)} assets..."}
+                )
+                
+                # Fetch market data for each asset
+                from app.agents.market_data import market_data_agent
+                assets_data = []
+                for idx, asset_query in enumerate(relevant_assets):
+                    try:
+                        market_context = await market_data_agent.get_market_context(asset_query)
+                        if "error" not in market_context and market_context.get("current_price"):
+                            assets_data.append({
+                                "query": asset_query,
+                                "market_context": market_context
+                            })
+                            yield OrchestratorEvent(
+                                event_type="agent_update",
+                                agent_type=AgentType.FABRICATE,
+                                data={"status": "running", "progress": 30 + (idx + 1) * 20 // len(relevant_assets), "task": f"Fetched data for {market_context.get('name', asset_query)}"}
+                            )
+                    except Exception as e:
+                        logger.error(f"❌ Failed to fetch data for {asset_query}: {e}")
+                
+                if not assets_data:
+                    # Fallback to default assets
+                    logger.warning("⚠️ No assets found, using defaults")
+                    assets_data = [
+                        {"query": "SPY", "market_context": await market_data_agent.get_market_context("sp500")},
+                        {"query": "BTC-USD", "market_context": await market_data_agent.get_market_context("bitcoin")},
+                        {"query": "QQQ", "market_context": await market_data_agent.get_market_context("nasdaq")},
+                    ]
+                
+                yield OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FABRICATE,
+                    data={"status": "running", "progress": 60, "task": "Generating projected prices..."}
+                )
+                
+                # Generate simulation for each asset
+                simulation_assets = []
+                for asset_info in assets_data:
+                    market_ctx = asset_info["market_context"]
+                    if "error" in market_ctx:
+                        continue
+                    
+                    # Generate projection using Fabricate
+                    sim_data = self._generate_simulation(query, market_ctx, all_news)
+                    main_asset = sim_data.get("assets", [{}])[0] if sim_data.get("assets") else {}
+                    
+                    simulation_assets.append({
+                        "asset": market_ctx.get("name", asset_info["query"]),
+                        "current_value": market_ctx.get("current_price", 1000),
+                        "projected_value": main_asset.get("projected_value", market_ctx.get("current_price", 1000)),
+                        "change": main_asset.get("change", 0),
+                        "change_percent": main_asset.get("change_percent", 0),
+                        "history": market_ctx.get("history", []),
+                    })
+                
+                simulation_result = {"scenario": query, "assets": simulation_assets}
+                
+                yield OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FABRICATE,
+                    data={"status": "completed", "progress": 100, "task": f"Generated projections for {len(simulation_assets)} assets"}
+                )
+                
+                # Emit complete event with simulation data
+                yield OrchestratorEvent(
+                    event_type="complete",
+                    agent_type=None,
+                    data={
+                        "job_id": str(self.job_id),
+                        "query": query,
+                        "simulation": simulation_result,
+                        "mode": "simulate"
+                    }
+                )
+                return
+            
+            # PAPER MODE: Full paper generation
             # Phase 1: Run 6 Yutori agents & Image Generation in PARALLEL
             # We want to start images immediately as they take time
             image_task = None
             if mode == "paper":
                 image_task = asyncio.create_task(self._generate_contextual_images(query))
                 logger.info("🎨 Contextual images started in background")
+                
+            agent_screenshots = []
             
             if use_web_search:
                 try:
@@ -96,26 +192,94 @@ class AgentOrchestrator:
                     )
                     for result in yutori_results:
                         all_news.extend(result.get("news_items", []))
+                        # Collect screenshots from agents
+                        if result.get("screenshot"):
+                            # Prepend screenshots to images list so they take priority as secondary visuals
+                            # or append to a separate list? 
+                            # Let's treat them as distinct for now, but to save modifying _compose_paper signature too much layout
+                            # we can just add them to the images list which is passed to _compose_paper
+                            pass 
+
+                    # Extract screenshots properly
+                    agent_screenshots = [r.get("screenshot") for r in yutori_results if r.get("screenshot")]
+                    
                 except asyncio.TimeoutError:
                     logger.warning("⚠️ Yutori phase timed out after 90s, proceeding with available results")
                     # Continue with whatever news we have (could be empty)
+                    agent_screenshots = []
             
-            # Phase 2: Fabricate simulation
-            # Now driven by Yutori's findings
+            # Phase 2: Fabricate simulation & Analysis
+            # NOW driven by Yutori's findings
+            
+            # A. Simulation (scenarios)
             async for event in self._run_fabricate_mock(query, mode, news_context=all_news):
                 yield event
                 if event.data.get("status") == "completed":
                     simulation_result = event.data.get("result", {})
-            
-            # Wait for Images (with timeout)
+
+            # B. Market Analysis (Fabricate + Freepik)
+            # User Request: "headlines of market analysis that fabricate creates by yutori request with freepik visuals"
+            analysis_items = []
+            try:
+                # Generate analysis using Fabricate based on all_news context
+                # We synthesize the top news into a coherent analysis request
+                from app.agents.fabricate import fabricate_agent
+                
+                # Context string from top 3 news items
+                context_str = " ".join([n.get("title", "") + " " + n.get("summary", "") for n in all_news[:3]])
+                
+                yield OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FABRICATE,
+                    data={"status": "running", "progress": 50, "task": "Synthesizing market analysis..."}
+                )
+                
+                # Generate 2 distinct analysis pieces
+                for i in range(2):
+                    analysis = await fabricate_agent.generate_market_analysis(context_str)
+                    
+                    # Generate a specific visual for this analysis using Freepik
+                    # using the specific headline/topic
+                    visual_query = f"editorial illustration of {analysis.get('topic', 'market')}, abstract concept, {analysis.get('title')}"
+                    image_url = await self._generate_single_image(visual_query)
+                    
+                    analysis_items.append({
+                        "id": str(uuid4()),
+                        "title": analysis.get("title"),
+                        "summary": analysis.get("summary"),
+                        "source": "Market Impact Analysis", # Distinct source name
+                        "image_url": image_url,
+                        "published_at": datetime.utcnow().isoformat(),
+                        "agent_type": "yutori_analysis_model", # Special type for frontend filtering
+                        "is_analysis": True 
+                    })
+                    
+                yield OrchestratorEvent(
+                    event_type="agent_update",
+                    agent_type=AgentType.FABRICATE,
+                    data={"status": "completed", "progress": 100, "task": "Analysis generation complete"}
+                )
+                
+                # Add consumption to paper
+                all_news.extend(analysis_items)
+
+            except Exception as e:
+                logger.error(f"❌ Analysis generation failed: {e}")
+
+            # Wait for Contextual Images (with timeout)
+            generated_images = []
             if image_task:
                 try:
-                    images = await asyncio.wait_for(image_task, timeout=120.0)
-                    logger.info(f"🎨 Images generated: {len(images)}")
+                    generated_images = await asyncio.wait_for(image_task, timeout=120.0)
+                    logger.info(f"🎨 Images generated: {len(generated_images)}")
                 except asyncio.TimeoutError:
                     logger.warning("⚠️ Image generation timed out after 120s, proceeding without images")
-                    images = []
+                    generated_images = []
             
+            # Combine generated images with agent screenshots
+            # We prioritize generated images for Cover, but screenshots for secondary
+            images = generated_images + agent_screenshots
+
             # Compose final paper
             paper = self._compose_paper(query, all_news, simulation_result, images)
             logger.info(f"✅ Paper: {paper['headline'][:50]}...")
@@ -141,29 +305,64 @@ class AgentOrchestrator:
     async def _run_multiple_yutori(self, query: str) -> list[dict]:
         """Run 6 Yutori agents in parallel with heavily varied focuses."""
         
+        # 1. DETECT SIMULATION INTENT UPFRONT
+        # Use the raw query to decide if this is a simulation.
+        # This prevents "cleaning" from removing the triggers.
+        is_simulation_intent = self._is_simulation_query(query)
+        if is_simulation_intent:
+            logger.info(f"🔮 [ORCH] Simulation/Hypothetical detected for: '{query}'. Enforcing synthetic generation.")
+
         # Parse query for entities to make searches specific
-        # Simple heuristic: Split by 'vs' or 'attacking' etc to find entities roughly
-        # Restore full agent suite (User request: "why is there only 3 agents now?")
+        clean_query = query.lower()
+        # Remove all "what if" variations completely for the Base Query (for topics),
+        # BUT we still know it's a simulation trigger from above.
+        for phrase in ["what if", "what happens if", "what will happen if", "simulate", "simulation", "scenario"]:
+            clean_query = clean_query.replace(phrase, "")
+        clean_query = clean_query.strip()
         
-        # Clean query: Remove "simulate", "what if", etc. to avoid dictionary definitions
-        clean_query = query.lower().replace("simulate", "").replace("what if", "").replace("what happens if", "").strip()
         if not clean_query: # Fallback if query was only stop words
-            clean_query = query
+            clean_query = query.lower()
         
-        # Extract core keywords (first 5-7 words) for better search performance
-        # Long queries often fail with DuckDuckGo
-        words = clean_query.split()
-        core_query = " ".join(words[:7])  # Limit to first 7 words
+        # Extract key entities (countries, topics) for better search
+        common_countries = ["israel", "japan", "china", "russia", "ukraine", "usa", "us", "united states", "iran", "north korea", "south korea", "taiwan", "uk", "britain", "france", "germany", "eu", "europe"]
+        entities = []
+        for country in common_countries:
+            if country in clean_query:
+                entities.append(country)
         
-        # Using concise keyword queries for better search performance
-        # Shorter queries work better with DuckDuckGo
+        # Extract key topics
+        key_topics = []
+        topics_map = {
+            "nuke": "nuclear",
+            "nuclear": "nuclear",
+            "war": "war",
+            "attack": "attack",
+            "economy": "economy",
+            "market": "market",
+            "trade": "trade",
+            "sanction": "sanction",
+        }
+        for word, topic in topics_map.items():
+            if word in clean_query:
+                key_topics.append(topic)
+        
+        # Build focused query from entities and topics (max 4-5 words)
+        query_parts = entities[:2] + key_topics[:2]  # Max 2 entities + 2 topics
+        if not query_parts:
+            # Fallback: use first 4 meaningful words
+            words = [w for w in clean_query.split() if len(w) > 3][:4]
+            query_parts = words
+        
+        base_query = " ".join(query_parts[:4])  # Max 4 words total
+        
+        # Build agent-specific queries
         agents = [
-            (AgentType.YUTORI_NEWS, f"{core_query} news"),
-            (AgentType.YUTORI_SENTIMENT, f"{core_query} sentiment"),
-            (AgentType.YUTORI_ANALYSIS, f"{core_query} analysis"),
-            (AgentType.YUTORI_TARGET, f"{core_query} impact"),
-            (AgentType.YUTORI_GLOBAL, f"{core_query} global"),
-            (AgentType.YUTORI_ECON, f"{core_query} economy"),
+            (AgentType.YUTORI_NEWS, f"{base_query} news"),
+            (AgentType.YUTORI_SENTIMENT, f"{base_query} reaction"),
+            (AgentType.YUTORI_ANALYSIS, f"{base_query} analysis"),
+            (AgentType.YUTORI_TARGET, f"{base_query} impact"),
+            (AgentType.YUTORI_GLOBAL, f"{base_query} response"),
+            (AgentType.YUTORI_ECON, f"{base_query} economy"),
         ]
         
         # Limit concurrency to avoid DDG rate limits (Max 2 parallel searches)
@@ -173,10 +372,14 @@ class AgentOrchestrator:
         async def run_throttled(atype, aquery):
             async with semaphore:
                 # Add random jitter to prevent burst pattern (longer delays)
-                delay = random.uniform(1.0, 3.0)
-                logger.debug(f"⏳ Throttling {atype.value} with {delay:.1f}s delay")
-                await asyncio.sleep(delay)
-                return await self._run_single_yutori(atype, aquery)
+                # SKIP DELAY FOR SIMULATION (User request: "why safe we waiting?")
+                if not is_simulation_intent:
+                    delay = random.uniform(1.0, 3.0)
+                    logger.debug(f"⏳ Throttling {atype.value} with {delay:.1f}s delay")
+                    await asyncio.sleep(delay)
+                
+                # PASS FORCE SIMULATION FLAG
+                return await self._run_single_yutori(atype, aquery, force_simulation=is_simulation_intent)
         
         # Create tasks with throttling
         tasks = []
@@ -189,7 +392,7 @@ class AgentOrchestrator:
         
         return [r for r in results if isinstance(r, dict)]
     
-    async def _run_single_yutori(self, agent_type: AgentType, query: str) -> dict:
+    async def _run_single_yutori(self, agent_type: AgentType, query: str, force_simulation: bool = False) -> dict:
         """Run single Yutori agent with specific focus."""
         from app.api.websocket import manager
         
@@ -220,7 +423,8 @@ class AgentOrchestrator:
             
             # Check if this is a simulation scenario
             # If so, generate synthetic "future" news instead of searching current web
-            is_simulation = self._is_simulation_query(query)
+            # Accept explicit flag or internal check (though internal check might be on "cleaned" query now)
+            is_simulation = force_simulation or self._is_simulation_query(query)
             
             if is_simulation:
                 # Simulation Mode: Generate synthetic future headlines
@@ -300,20 +504,52 @@ class AgentOrchestrator:
                     except Exception as e:
                         logger.error(f"⚠️ [AGENTIC] Enhancement failed: {e}")
             
-            # Format news items
+            # Format news items with relevance filtering
             news_items = []
-            for item in result.sources:
-                news_items.append({
-                    "id": str(uuid4()),
-                    "title": item.get("title", "No Title"),
-                    "url": item.get("url", "#"),
-                    "summary": item.get("snippet", ""),
-                    "source": "Web",
-                    "published_at": datetime.utcnow().isoformat(),
-                    "agent_type": agent_type.value
-                })
+            query_lower = query.lower()
+            # Extract key terms from query for relevance checking
+            query_terms = set(query_lower.split())
+            # Remove stop words
+            stop_words = {"what", "will", "happen", "if", "is", "a", "an", "the", "to", "of", "and", "or", "but", "in", "on", "at", "for", "with", "by"}
+            query_terms = {t for t in query_terms if t not in stop_words and len(t) > 2}
             
-            return {"news_items": news_items}
+            for item in result.sources:
+                title = item.get("title", "No Title")
+                snippet = item.get("snippet", "")
+                title_lower = title.lower()
+                snippet_lower = snippet.lower()
+                
+                # Check relevance - must contain at least one query term
+                relevance_score = sum(1 for term in query_terms if term in title_lower or term in snippet_lower)
+                
+                # Filter out irrelevant results (dating apps, unrelated topics)
+                irrelevant_keywords = ["dating", "app", "happn", "tinder", "bumble", "match.com", "singles", "romance"]
+                is_irrelevant = any(kw in title_lower or kw in snippet_lower for kw in irrelevant_keywords)
+                
+                # Only include if relevant and not irrelevant
+                if relevance_score > 0 and not is_irrelevant:
+                    news_items.append({
+                        "id": str(uuid4()),
+                        "title": title,
+                        "url": item.get("url", "#"),
+                        "summary": snippet,
+                        "source": "Web",
+                        "published_at": datetime.utcnow().isoformat(),
+                        "agent_type": agent_type.value,
+                        "agent": name  # Add agent name for filtering
+                    })
+                else:
+                    logger.debug(f"⚠️ Filtered out irrelevant result: {title[:50]}")
+            
+            # If we filtered out everything, use mock data
+            if not news_items:
+                logger.warning(f"⚠️ All search results filtered out as irrelevant for {name}, using mock data")
+                return {"news_items": self._mock_news_for_agent(agent_type, query=query)}
+            
+            return {
+                "news_items": news_items,
+                "screenshot": screenshot_url
+            }
             
         except Exception as e:
             # Emit error completion event on exception
@@ -444,6 +680,30 @@ class AgentOrchestrator:
         while len(final_images) < 3:
             final_images.append(None)
 
+        # Convert news items to articles format expected by frontend
+        articles = []
+        for idx, news_item in enumerate(news[:10]):  # Limit to 10 articles
+            articles.append({
+                "id": news_item.get("id", str(uuid4())),
+                "title": news_item.get("title", "News Update"),
+                "content": news_item.get("summary", news_item.get("snippet", f"Coverage of {query}.")),
+                "summary": news_item.get("summary", news_item.get("snippet", ""))[:150] + "...",
+                "category": news_item.get("agent_type", "general").lower().replace("_", " "),
+                "importance": 5 - (idx // 2),  # Decrease importance for later articles
+                "image": news_item.get("image") or news_item.get("screenshot"),  # Support both fields
+            })
+        
+        # Ensure we have at least one article (the headline)
+        if not articles:
+            articles = [{
+                "id": str(uuid4()),
+                "title": headline,
+                "content": f"Comprehensive coverage of {query}. Market analysis and global reactions.",
+                "summary": f"Full coverage of {query}...",
+                "category": "headline",
+                "importance": 5,
+            }]
+        
         return {
             "paper_id": str(uuid4()),
             "date": tomorrow.strftime("%B %d, %Y"),
@@ -453,7 +713,7 @@ class AgentOrchestrator:
             "cover_image_url": final_images[0],
             "secondary_image_url": final_images[1],
             "tertiary_image_url": final_images[2],
-            "articles": [{"id": str(uuid4()), "title": headline, "content": f"Full coverage of {query}.", "category": "headline", "importance": 5}],
+            "articles": articles,
             "market_snapshot": [
                 {
                     "asset": asset.get("asset", "Market"),
@@ -768,5 +1028,64 @@ class AgentOrchestrator:
             add_correlated("EUR/USD", 1.08, 0.3)
 
         return {"scenario": query, "assets": assets}
+
+    async def _generate_single_image(self, prompt: str) -> str:
+        """Helper to generate a single image for analysis items."""
+        try:
+            # Add some style keywords automatically
+            styled_prompt = f"{prompt}, editorial, detailed, 8k, professional"
+            result = await freepik_agent.generate_image(styled_prompt)
+            # Return URL or Base64 string, not the object
+            if result.image_url:
+                return result.image_url
+            elif result.base64_data:
+                return f"data:image/png;base64,{result.base64_data}"
+            return ""
+        except Exception as e:
+            logger.error(f"❌ Single image generation failed: {e}")
+            return ""
+    
+    def _identify_relevant_assets(self, query: str) -> list[str]:
+        """Identify which market assets/tickers are relevant to the query."""
+        q_lower = query.lower()
+        assets = []
+        
+        # Crypto mentions
+        if any(word in q_lower for word in ["bitcoin", "btc", "crypto", "cryptocurrency"]):
+            assets.append("BTC-USD")
+        
+        # Stock indices
+        if any(word in q_lower for word in ["sp500", "s&p", "spy", "sp 500"]):
+            assets.append("SPY")
+        elif any(word in q_lower for word in ["nasdaq", "tech", "technology"]):
+            assets.append("QQQ")
+        elif any(word in q_lower for word in ["dow", "dow jones"]):
+            assets.append("DIA")
+        
+        # Country-specific
+        if any(word in q_lower for word in ["japan", "japanese", "nikkei"]):
+            assets.append("EWJ")  # Japan ETF
+        if any(word in q_lower for word in ["china", "chinese"]):
+            assets.append("FXI")  # China ETF
+        if any(word in q_lower for word in ["europe", "eu", "euro"]):
+            assets.append("VGK")  # Europe ETF
+        
+        # Commodities
+        if any(word in q_lower for word in ["gold", "precious metal"]):
+            assets.append("GC=F")
+        if any(word in q_lower for word in ["oil", "crude", "petroleum"]):
+            assets.append("CL=F")
+        
+        # VIX (volatility/fear)
+        if any(word in q_lower for word in ["volatility", "fear", "panic", "crisis", "crash"]):
+            assets.append("^VIX")
+        
+        # Default assets if none found
+        if not assets:
+            # Always include major indices
+            assets = ["SPY", "BTC-USD", "QQQ"]
+        
+        # Limit to 6 assets max for performance
+        return assets[:6]
 
 orchestrator = AgentOrchestrator()
