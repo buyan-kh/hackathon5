@@ -131,25 +131,63 @@ class AgentOrchestrator:
                     data={"status": "running", "progress": 60, "task": "Generating projected prices..."}
                 )
                 
-                # Generate simulation for each asset
+                # Generate simulation for each asset using Fabricate
+                from app.agents.fabricate import fabricate_agent
+                
                 simulation_assets = []
-                for asset_info in assets_data:
+                for idx, asset_info in enumerate(assets_data):
                     market_ctx = asset_info["market_context"]
                     if "error" in market_ctx:
                         continue
                     
-                    # Generate projection using Fabricate
-                    sim_data = self._generate_simulation(query, market_ctx, all_news)
-                    main_asset = sim_data.get("assets", [{}])[0] if sim_data.get("assets") else {}
+                    asset_name = market_ctx.get("name", asset_info["query"])
+                    asset_symbol = market_ctx.get("symbol", asset_info["query"])
+                    historical_data = market_ctx.get("history", [])
+                    current_price = market_ctx.get("current_price", 1000)
                     
-                    simulation_assets.append({
-                        "asset": market_ctx.get("name", asset_info["query"]),
-                        "current_value": market_ctx.get("current_price", 1000),
-                        "projected_value": main_asset.get("projected_value", market_ctx.get("current_price", 1000)),
-                        "change": main_asset.get("change", 0),
-                        "change_percent": main_asset.get("change_percent", 0),
-                        "history": market_ctx.get("history", []),
-                    })
+                    yield OrchestratorEvent(
+                        event_type="agent_update",
+                        agent_type=AgentType.FABRICATE,
+                        data={"status": "running", "progress": 60 + (idx * 30 // len(assets_data)), "task": f"Generating projection for {asset_name}..."}
+                    )
+                    
+                    # Call Fabricate to generate projection based on historical data and scenario
+                    try:
+                        projection = await fabricate_agent.generate_market_projection(
+                            asset_name=asset_name,
+                            asset_symbol=asset_symbol,
+                            historical_data=historical_data,
+                            scenario_prompt=query,  # User's full query as scenario
+                            projection_months=3
+                        )
+                        
+                        simulation_assets.append({
+                            "asset": asset_name,
+                            "current_value": current_price,
+                            "projected_value": projection.get("projected_value", current_price),
+                            "change": projection.get("change", 0),
+                            "change_percent": projection.get("change_percent", 0),
+                            "history": historical_data,
+                            "projected_history": projection.get("projected_history", []),
+                            "reasoning": projection.get("reasoning", ""),
+                        })
+                        
+                        logger.info(f"✅ [FABRICATE] Generated projection for {asset_name}: {projection.get('change_percent', 0):+.2f}%")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ [FABRICATE] Failed to generate projection for {asset_name}: {e}")
+                        # Fallback to rule-based projection
+                        sim_data = await self._generate_simulation(query, market_ctx, all_news)
+                        main_asset = sim_data.get("assets", [{}])[0] if sim_data.get("assets") else {}
+                        
+                        simulation_assets.append({
+                            "asset": asset_name,
+                            "current_value": current_price,
+                            "projected_value": main_asset.get("projected_value", current_price),
+                            "change": main_asset.get("change", 0),
+                            "change_percent": main_asset.get("change_percent", 0),
+                            "history": historical_data,
+                        })
                 
                 simulation_result = {"scenario": query, "assets": simulation_assets}
                 
@@ -239,16 +277,20 @@ class AgentOrchestrator:
                     analysis = await fabricate_agent.generate_market_analysis(context_str)
                     
                     # Generate a specific visual for this analysis using Freepik
-                    # using the specific headline/topic
-                    visual_query = f"editorial illustration of {analysis.get('topic', 'market')}, abstract concept, {analysis.get('title')}"
-                    image_url = await self._generate_single_image(visual_query)
+                    # If Gemini provided a visual prompt, use it. Otherwise construct one.
+                    visual_prompt = analysis.get("visual_prompt")
+                    if not visual_prompt:
+                         visual_prompt = f"editorial illustration of {analysis.get('topic', 'market')}, abstract concept, {analysis.get('title')}"
+                    
+                    logger.info(f"🎨 Generating analysis visual: {visual_prompt[:50]}...")
+                    image_url = await self._generate_single_image(visual_prompt)
                     
                     analysis_items.append({
                         "id": str(uuid4()),
                         "title": analysis.get("title"),
                         "summary": analysis.get("summary"),
                         "source": "Market Impact Analysis", # Distinct source name
-                        "image_url": image_url,
+                        "image": image_url,  # Changed from image_url to image for frontend compatibility
                         "published_at": datetime.utcnow().isoformat(),
                         "agent_type": "yutori_analysis_model", # Special type for frontend filtering
                         "is_analysis": True 
@@ -821,24 +863,66 @@ class AgentOrchestrator:
         return any(t in q for t in triggers)
 
     async def _generate_synthetic_news(self, agent_type: AgentType, query: str) -> dict:
-        """Generate a synthetic news item for a simulation scenario."""
+        """Generate a synthetic news item for a simulation scenario using Gemini."""
         # Remove trigger words to get the core scenario
         clean_query = query.lower().replace("what if", "").replace("simulate", "").replace("what happens if", "").strip()
         
-        # Call Fabricate Agent
+        # Call Fabricate Agent for headline and content
         try:
             from app.agents.fabricate import fabricate_agent
             headline = await fabricate_agent.generate_headline(clean_query.title(), context=agent_type.value)
+            
+            # Generate detailed article content using Gemini
+            if fabricate_agent.gemini_model:
+                try:
+                    import asyncio
+                    prompt = f"""
+You are a senior journalist writing for a major newspaper.
+
+Scenario: {clean_query}
+Perspective: {agent_type.value}
+Headline: {headline}
+
+Task: Write a detailed, realistic news article (3-4 paragraphs, 200-300 words) covering:
+1. What happened and immediate reactions
+2. Expert analysis and implications
+3. Market/geopolitical consequences
+4. What to watch next
+
+Style: Professional, objective, detailed. Use present tense for immediacy.
+Do NOT use phrases like "simulation" or "hypothetical" - write as if this is really happening.
+"""
+                    
+                    response = await asyncio.to_thread(
+                        fabricate_agent.gemini_model.generate_content,
+                        prompt
+                    )
+                    
+                    if response.text:
+                        summary = response.text.strip()
+                        logger.info(f"✅ Generated article content via Gemini: {len(summary)} chars")
+                    else:
+                        raise ValueError("Empty response from Gemini")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Gemini content generation failed: {e}")
+                    # Fallback to basic summary
+                    summary = f"Analysis of the {clean_query} scenario. Market participants are monitoring developments closely as the situation unfolds. Experts suggest significant volatility ahead as global markets digest the implications of this event. Regional impacts are expected to vary, with particular attention on supply chain disruptions and currency movements."
+            else:
+                logger.warning("⚠️ Gemini not available, using fallback summary")
+                summary = f"Analysis of the {clean_query} scenario. Market participants are monitoring developments closely as the situation unfolds. Experts suggest significant volatility ahead as global markets digest the implications of this event."
+                
         except Exception as e:
-            logger.error(f"❌ Fabricate headline generation failed: {e}")
-            headline = f"Simulation: {clean_query.title()} Scenario Active"
+            logger.error(f"❌ Synthetic news generation failed: {e}")
+            headline = f"Analysis: {clean_query.title()}"
+            summary = f"Comprehensive analysis of the {clean_query} scenario and its potential market implications."
 
         return {
             "id": str(uuid4()),
             "title": headline,
             "url": "#simulation",
-            "summary": f"Detailed simulation report regarding the hypothetical scenario: {clean_query}. This is a generated projection of potential outcomes.",
-            "source": "Fabricate Engine (Simulation)",
+            "summary": summary,  # Now generated by Gemini
+            "source": "AI Analysis Engine",
             "published_at": (datetime.utcnow() + timedelta(hours=random.randint(1, 24))).isoformat(),
             "agent_type": agent_type.value
         }
@@ -928,7 +1012,7 @@ class AgentOrchestrator:
                 data={"status": "running", "progress": 80, "task": "Running predictive models..."}
             )
             
-            simulation_result = self._generate_simulation(query, market_context)
+            simulation_result = await self._generate_simulation(query, market_context)
             
             yield OrchestratorEvent(
                 event_type="agent_update",
@@ -945,45 +1029,48 @@ class AgentOrchestrator:
             )
 
     
-    def _generate_simulation(self, query: str, market_ctx: dict, news_context: list = []) -> dict:
-        """Generate simulation data using real historical context and news findings."""
+    async def _generate_simulation(self, query: str, market_ctx: dict, news_context: list = []) -> dict:
+        """Generate simulation data using Fabricate agent - same logic as simulation mode."""
+        from app.agents.fabricate import fabricate_agent
+        
         # Combine query + news headlines for sentiment analysis
         text_corpus = query.lower()
         if news_context:
             text_corpus += " " + " ".join([n["title"].lower() for n in news_context])
-            
+        
+        # Detect catastrophic/extreme scenarios
+        catastrophic_keywords = ["disappear", "sink", "destroy", "wiped out", "cease to exist", "vanish", "annihilated", "extinct"]
+        is_catastrophic = any(kw in text_corpus for kw in catastrophic_keywords)
+        
         # Sentiment Keywords
-        negative_keywords = ["crash", "spike", "surge", "collapse", "tariff", "war", "crisis", "attack", "tension", "nuclear", "sanction", "ban"]
+        negative_keywords = ["crash", "spike", "surge", "collapse", "tariff", "war", "crisis", "attack", "tension", "nuclear", "sanction", "ban", "disappear", "sink", "destroy"]
         positive_keywords = ["boom", "growth", "record", "peace", "deal", "agreement", "stimulus", "cut", "rally"]
         
         # Simple Sentiment Scoring
         neg_score = sum(1 for w in negative_keywords if w in text_corpus)
         pos_score = sum(1 for w in positive_keywords if w in text_corpus)
         
-        # Determine Direction
-        if "oil" in text_corpus or "gold" in text_corpus:
-            # Commodities often go UP in crisis
-            direction = 1 if neg_score > pos_score else -1
-        else:
-            # Equities generally go DOWN in crisis
-            direction = -1 if neg_score > pos_score else 1
-            
-        # Determine Volatility based on "loudness" of news
-        volatility_multiplier = 1.0 + (neg_score + pos_score) * 0.2
-        volatility = 0.02 * volatility_multiplier
-        
         main_asset_name = market_ctx.get("name", "Market Index")
+        main_asset_symbol = market_ctx.get("symbol", "").upper()  # Use 'symbol' not 'ticker'
         main_asset_hist = market_ctx.get("history", [])
         current_val = market_ctx.get("current_price", 1000)
         
-        # Projection Logic
-        projected_change = direction * (volatility * 100)
-        
-        # Cap extreme moves for realism unless "nuclear" involved
-        if "nuclear" not in text_corpus and abs(projected_change) > 15:
-            projected_change = 15 * (1 if projected_change > 0 else -1)
-            
-        projected_val = current_val * (1 + (projected_change / 100))
+        # Use Fabricate agent to generate projection (same logic as simulation mode)
+        try:
+            projection = await fabricate_agent.generate_market_projection(
+                asset_name=main_asset_name,
+                asset_symbol=main_asset_symbol,
+                historical_data=main_asset_hist,
+                scenario_prompt=query,
+                projection_months=3
+            )
+            projected_change = projection.get("change_percent", 0)
+            projected_val = projection.get("projected_value", current_val)
+        except Exception as e:
+            logger.error(f"❌ Fabricate projection failed, using simple fallback: {e}")
+            # Simple fallback if Fabricate fails completely
+            projected_change = -10.0 if is_catastrophic else -2.0
+            projected_val = current_val * (1 + (projected_change / 100))
 
         
         # Build the main asset result
@@ -1046,46 +1133,116 @@ class AgentOrchestrator:
             return ""
     
     def _identify_relevant_assets(self, query: str) -> list[str]:
-        """Identify which market assets/tickers are relevant to the query."""
+        """Identify which market assets/tickers are relevant to the query - context-aware."""
         q_lower = query.lower()
-        assets = []
+        assets = []  # Will maintain order
+        seen = set()  # Track duplicates
+        
+        def add_asset(ticker: str):
+            """Helper to add asset only if not already seen."""
+            if ticker not in seen:
+                assets.append(ticker)
+                seen.add(ticker)
+        
+        # Detect catastrophic/extreme scenarios
+        catastrophic_keywords = ["disappear", "sink", "destroy", "wiped out", "cease to exist", "vanish", "annihilated", "die", "dies", "death"]
+        is_catastrophic = any(kw in q_lower for kw in catastrophic_keywords)
+        
+        # US POLITICAL/LEADERSHIP SCENARIOS (e.g., "Trump dies")
+        us_political_keywords = ["trump", "biden", "president", "election", "white house", "washington"]
+        is_us_political = any(kw in q_lower for kw in us_political_keywords)
+        
+        if is_us_political and is_catastrophic:
+            # Major US political event - show diverse markets
+            add_asset("SPY")      # US stock market
+            add_asset("^VIX")     # Volatility/fear index
+            add_asset("GC=F")     # Gold (safe haven)
+            add_asset("BTC-USD")  # Crypto (alternative asset)
+            if len(assets) >= 4:
+                return assets[:4]
+        
+        # JAPAN-SPECIFIC ASSETS (Priority detection)
+        if any(word in q_lower for word in ["japan", "japanese", "nikkei", "tokyo"]):
+            add_asset("^N225")  # Nikkei 225 index (most important)
+            add_asset("JPY=X")   # USD/JPY currency pair (critical for Japan scenarios)
+            add_asset("EWJ")     # Japan ETF
+            if is_catastrophic:
+                add_asset("TM")  # Toyota
+            if len(assets) >= 4:
+                return assets[:4]
+        
+        # CHINA-SPECIFIC ASSETS
+        if any(word in q_lower for word in ["china", "chinese", "shanghai"]):
+            add_asset("FXI")     # China ETF
+            add_asset("CNY=X")   # USD/CNY currency pair
+            add_asset("000001.SS") # Shanghai Composite
+            if is_catastrophic:
+                add_asset("BABA") # Alibaba
+            if len(assets) >= 4:
+                return assets[:4]
+        
+        # EUROPE-SPECIFIC ASSETS
+        if any(word in q_lower for word in ["europe", "eu", "euro", "germany", "france"]):
+            add_asset("VGK")     # Europe ETF
+            add_asset("EURUSD=X") # EUR/USD currency pair
+            if "germany" in q_lower:
+                add_asset("EWG")  # Germany ETF
+            if len(assets) >= 4:
+                return assets[:4]
+        
+        # UK-SPECIFIC ASSETS
+        if any(word in q_lower for word in ["uk", "britain", "british", "london"]):
+            add_asset("EWU")     # UK ETF
+            add_asset("GBPUSD=X") # GBP/USD currency pair
+            add_asset("^FTSE")   # FTSE 100
+            if len(assets) >= 4:
+                return assets[:4]
         
         # Crypto mentions
         if any(word in q_lower for word in ["bitcoin", "btc", "crypto", "cryptocurrency"]):
-            assets.append("BTC-USD")
+            add_asset("BTC-USD")
         
-        # Stock indices
-        if any(word in q_lower for word in ["sp500", "s&p", "spy", "sp 500"]):
-            assets.append("SPY")
-        elif any(word in q_lower for word in ["nasdaq", "tech", "technology"]):
-            assets.append("QQQ")
-        elif any(word in q_lower for word in ["dow", "dow jones"]):
-            assets.append("DIA")
-        
-        # Country-specific
-        if any(word in q_lower for word in ["japan", "japanese", "nikkei"]):
-            assets.append("EWJ")  # Japan ETF
-        if any(word in q_lower for word in ["china", "chinese"]):
-            assets.append("FXI")  # China ETF
-        if any(word in q_lower for word in ["europe", "eu", "euro"]):
-            assets.append("VGK")  # Europe ETF
+        # Stock indices (only if no country-specific assets found)
+        if not assets:
+            if any(word in q_lower for word in ["sp500", "s&p", "spy", "sp 500"]):
+                add_asset("SPY")
+            elif any(word in q_lower for word in ["nasdaq", "tech", "technology"]):
+                add_asset("QQQ")
+            elif any(word in q_lower for word in ["dow", "dow jones"]):
+                add_asset("DIA")
         
         # Commodities
         if any(word in q_lower for word in ["gold", "precious metal"]):
-            assets.append("GC=F")
+            add_asset("GC=F")
         if any(word in q_lower for word in ["oil", "crude", "petroleum"]):
-            assets.append("CL=F")
+            add_asset("CL=F")
         
-        # VIX (volatility/fear)
-        if any(word in q_lower for word in ["volatility", "fear", "panic", "crisis", "crash"]):
-            assets.append("^VIX")
+        # VIX (volatility/fear) - especially important for catastrophic scenarios
+        if is_catastrophic or any(word in q_lower for word in ["volatility", "fear", "panic", "crisis", "crash"]):
+            add_asset("^VIX")
+        
+        # For catastrophic scenarios, ensure diverse market coverage
+        if is_catastrophic:
+            # Add US market if not already present (but avoid duplicates)
+            if "SPY" not in seen and "QQQ" not in seen and "DIA" not in seen:
+                add_asset("SPY")  # Global impact on US markets
+            
+            # Add safe haven (Gold) if not present
+            if "GC=F" not in seen:
+                add_asset("GC=F")
+            
+            # Add crypto if not present
+            if "BTC-USD" not in seen and len(assets) < 4:
+                add_asset("BTC-USD")
         
         # Default assets if none found
         if not assets:
-            # Always include major indices
-            assets = ["SPY", "BTC-USD", "QQQ"]
+            add_asset("SPY")
+            add_asset("BTC-USD")
+            add_asset("QQQ")
+            add_asset("^VIX")
         
-        # Limit to 6 assets max for performance
-        return assets[:6]
+        # Limit to 4 assets max (user requested 4)
+        return assets[:4]
 
 orchestrator = AgentOrchestrator()
