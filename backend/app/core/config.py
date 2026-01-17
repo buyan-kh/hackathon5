@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     tonic_api_key: str = ""
     freepik_api_key: str = ""
     gemini_api_key: str = ""  # For LLM if needed
+    openai_api_key: str = ""  # For OpenAI LLM (market projections)
     
     # API Base URLs
     yutori_base_url: str = "https://api.yutori.com/v1"

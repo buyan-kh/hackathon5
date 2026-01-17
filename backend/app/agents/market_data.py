@@ -25,7 +25,10 @@ COMMON_ASSETS = {
     "vix": "^VIX",
     "fear": "^VIX",
     "japan": "^N225",
+    "japanese": "^N225",
     "nikkei": "^N225",
+    "jpy": "JPY=X",
+    "yen": "JPY=X",
     "uk": "^FTSE",
     "ftse": "^FTSE",
     "france": "^FCHI",
@@ -92,6 +95,13 @@ class MarketDataAgent:
     def _identify_ticker(self, query: str) -> str:
         """Heuristic to find best ticker symbol from query text."""
         q_lower = query.lower()
+        q_upper = query.upper()
+        
+        # If query looks like a ticker symbol itself, return it
+        # Ticker patterns: ^XXX, XXX-XX, XXX.XX, XXX=X
+        if any(char in query for char in ['^', '=', '-']) or q_upper == query:
+            # Likely already a ticker symbol
+            return query
         
         # Check direct map
         for key, symbol in COMMON_ASSETS.items():
